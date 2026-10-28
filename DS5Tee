@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+"""DS5Tee: tray icon + settings window for ds5bridge, per controller: speaker, haptics, rumble (each with a
+short preview played by the bridge), trigger strength/mode per side, lightbar colour, player LED,
+auto-disconnect time (read by bt-idle-disconnect.py) and a disconnect button, plus whether KDE uses
+DualSense touchpads as a mouse.
+Writes ~/.config/ds5bridge.json ({"default": {...}, "pads": {MAC: {...}}, "touchpad_mouse": bool});
+the bridge applies it within 0.3 s. Battery/connection come from /run/ds5bridge/status.json."""
+import json, os, subprocess, sys, time
+from PySide6.QtCore import QTimer, Qt
+from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon
+from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox, QDialog, QFormLayout,
+                               QHBoxLayout, QLabel, QMenu, QPushButton, QSlider, QSystemTrayIcon)
+
+CONFIG = os.path.expanduser("~/.config/ds5bridge.json")
+STATUS = "/run/ds5bridge/status.json"
+DEFAULTS = {"speaker": 50, "haptics": 100, "rumble": 100, "trigger_strength_l": 100, "trigger_strength_r": 100,
+            "trigger_mode_l": "game", "trigger_mode_r": "game", "color": "", "player": 0, "idle_minutes": 15}
+MODES = {"game": "Vom Spiel", "off": "Aus", "resistance": "Widerstand", "weapon": "Waffe (Druckpunkt)",
+         "vibration": "Vibration"}
+PLAYERS = {0: "Vom Spiel", 1: "1", 2: "2", 3: "3", 4: "4"}
+IDLE = {0: "Nie", 5: "5 min", 10: "10 min", 15: "15 min", 30: "30 min", 60: "60 min"}
+PREVIEW = ("speaker", "haptics", "rumble")  # sliders that play a sample in the controller
+DEFAULT_KEY = ""  # the "default" section: used by controllers without own settings
+NAMES = {}  # KWin input device path -> name
+
+
+def load(path, default):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def set_touchpad_mouse(enabled):
+    """Enable/disable DualSense touchpads as desktop pointer in KWin (games still read them)."""
+    kwin = ["busctl", "--user"]
+    tree = subprocess.run(kwin + ["tree", "org.kde.KWin", "--list"], capture_output=True, text=True).stdout
+    paths = [l for l in tree.split() if "/InputDevice/event" in l]
+    for gone in set(NAMES) - set(paths):  # removed devices; their event numbers get reused
+        del NAMES[gone]
+    for path in paths:
+        if path not in NAMES:
+            NAMES[path] = subprocess.run(kwin + ["get-property", "org.kde.KWin", path, "org.kde.KWin.InputDevice",
+                                                 "name"], capture_output=True, text=True).stdout
+        if "DualSense" in NAMES[path] and "Touchpad" in NAMES[path]:
+            subprocess.run(kwin + ["set-property", "org.kde.KWin", path, "org.kde.KWin.InputDevice", "enabled",
+                                   "b", "true" if enabled else "false"], capture_output=True)
+
+
+def pad_label(p):
+    bat = f"{p['battery']} %" if p.get("battery") is not None else "?"
+    return f"DualSense …{p['mac'][-5:]} – Akku {bat}{' ⚡' if p.get('charging') else ''}"
+
+
+class Settings(QDialog):
+    def __init__(self, app):
+        super().__init__()
+        self.app = app
+        self.setWindowTitle("DS5Tee")
+        self.setWindowIcon(app.icon)
+        form = QFormLayout(self)
+        self.target = QComboBox()
+        self.target.activated.connect(lambda _: self.refresh())
+        form.addRow("Controller", self.target)
+        self.sliders = {}
+        for key, label, top in (("speaker", "Lautsprecher", 100), ("haptics", "Haptik", 200),
+                                ("rumble", "Vibration", 100), ("trigger_strength_l", "Trigger L Stärke", 100),
+                                ("trigger_strength_r", "Trigger R Stärke", 100)):
+            slider = QSlider(Qt.Horizontal)
+            slider.setRange(0, top)
+            value = QLabel()
+            value.setMinimumWidth(40)
+            slider.valueChanged.connect(lambda v, k=key, l=value, sl=slider: (l.setText(f"{v} %"), self.set(k, v, sl)))
+            if key in PREVIEW:  # sample only when the drag ends, not while holding the handle
+                slider.sliderReleased.connect(lambda k=key: self.app.preview_soon(k, 200))
+            row = QHBoxLayout()
+            row.addWidget(slider)
+            row.addWidget(value)
+            form.addRow(label, row)
+            self.sliders[key] = (slider, value)
+        self.combos = {}
+        for key, label, choices in (("trigger_mode_l", "Trigger L Modus", MODES), ("trigger_mode_r", "Trigger R Modus", MODES),
+                                    ("player", "Controller-ID", PLAYERS), ("idle_minutes", "Auto-Trennen", IDLE)):
+            combo = QComboBox()
+            for k, v in choices.items():
+                combo.addItem(v, k)
+            combo.activated.connect(lambda i, k=key, c=combo: self.set(k, c.itemData(i)))
+            form.addRow(label, combo)
+            self.combos[key] = combo
+        self.color = QPushButton()
+        self.color.clicked.connect(self.pick_color)
+        game_color = QPushButton("Vom Spiel")
+        game_color.clicked.connect(lambda: self.set("color", ""))
+        row = QHBoxLayout()
+        row.addWidget(self.color)
+        row.addWidget(game_color)
+        form.addRow("Lichtleiste", row)
+        self.touchpad = QCheckBox("Touchpads als Maus am Desktop (alle Controller)")
+        self.touchpad.toggled.connect(self.app.set_touchpad)
+        form.addRow(self.touchpad)
+        self.disconnect = QPushButton("Controller trennen")
+        self.disconnect.clicked.connect(lambda: self.app.disconnect(self.mac()))
+        reset = QPushButton("Zurücksetzen")
+        reset.setToolTip("Alles auf Standard: Lautsprecher 50 %, übrige Regler 100 %, Trigger/Farbe/ID vom Spiel, Auto-Trennen 15 min")
+        reset.clicked.connect(lambda: self.app.reset(self.mac()))
+        row = QHBoxLayout()
+        row.addWidget(reset)
+        row.addWidget(self.disconnect)
+        form.addRow(row)
+
+    def mac(self):
+        return self.target.currentData() or DEFAULT_KEY
+
+    def set(self, key, value, slider=None):
+        self.app.set(self.mac(), key, value)
+        if key in PREVIEW and slider is not None and not slider.isSliderDown():
+            self.app.preview_soon(key, 1200)  # groove click, wheel, arrow keys: wait until the user stops
+
+    def pick_color(self):
+        c = QColorDialog.getColor(QColor(self.app.settings(self.mac())["color"] or "#0050ff"), self,
+                                  "Farbe der Lichtleiste")
+        if c.isValid():
+            self.set("color", c.name())
+
+    def update_labels(self):
+        """Battery/charging in the controller list without touching the selection."""
+        for p in self.app.pads:
+            i = self.target.findData(p["mac"])
+            if i >= 0:
+                self.target.setItemText(i, pad_label(p))
+
+    def refresh_targets(self):
+        current = self.mac()
+        self.target.clear()
+        for p in self.app.pads:
+            self.target.addItem(pad_label(p), p["mac"])
+        self.target.addItem("Standard für neue Controller", DEFAULT_KEY)
+        self.target.setCurrentIndex(max(0, self.target.findData(current)))
+
+    def refresh(self):
+        cfg = self.app.settings(self.mac())
+        for key, (slider, value) in self.sliders.items():
+            slider.blockSignals(True)
+            slider.setValue(cfg[key])
+            slider.blockSignals(False)
+            value.setText(f"{cfg[key]} %")
+        for key, combo in self.combos.items():
+            combo.setCurrentIndex(max(0, combo.findData(cfg[key])))
+        self.color.setText(cfg["color"] or "Farbe wählen …")
+        self.disconnect.setEnabled(bool(self.mac()))
+        self.color.setStyleSheet(f"background: {cfg['color']}" if cfg["color"] else "")
+        self.touchpad.blockSignals(True)
+        self.touchpad.setChecked(self.app.data.get("touchpad_mouse", False))
+        self.touchpad.blockSignals(False)
+
+
+class Tray(QApplication):
+    def __init__(self):
+        super().__init__(sys.argv)
+        self.setQuitOnLastWindowClosed(False)
+        self.data = load(CONFIG, {})
+        if "default" not in self.data:  # first version wrote one flat settings dict
+            flat = {k: v for k, v in self.data.items() if k in DEFAULTS}
+            self.data = {"default": flat, "pads": {}, "touchpad_mouse": self.data.get("touchpad_mouse", False)}
+        for section in [self.data["default"], *self.data["pads"].values()]:  # keys of the single-trigger version
+            section.pop("trigger_mode", None)
+            section.pop("trigger_strength", None)
+        self.pads = []
+        self.icon = QIcon.fromTheme("input-gamepad")
+        self.tray = QSystemTrayIcon(self.icon)
+        self.window = None
+        self.save_timer = QTimer(singleShot=True, interval=150, timeout=self.save)  # coalesce slider drags
+        self.preview_kind = None
+        self.preview_timer = QTimer(singleShot=True, timeout=self.preview)
+        self.menu = QMenu()
+        self.tray.setContextMenu(self.menu)
+        self.tray.activated.connect(lambda reason: reason == QSystemTrayIcon.Trigger and self.show_settings())
+        self.tray.show()
+        self.status_timer = QTimer(interval=5000, timeout=self.update_status)
+        self.status_timer.start()
+        self.update_status()
+        self.save()  # writes the migrated format for the bridge
+
+    def settings(self, mac):
+        own = self.data["pads"].get(mac, {}) if mac else {}
+        return {**DEFAULTS, **self.data["default"], **own}
+
+    def set(self, mac, key, value):
+        if mac:
+            self.data["pads"].setdefault(mac, {})[key] = value
+        else:
+            self.data["default"][key] = value
+        self.save_timer.start()
+        self.build_menu()
+        if self.window:
+            self.window.refresh()
+
+    def preview_soon(self, kind, delay):
+        self.preview_kind = kind
+        self.preview_timer.start(delay)  # restarts on every change; > save delay so the new value is used
+
+    def preview(self):
+        """Ask the bridge for a sample of the setting that was just changed (it reads the config file)."""
+        self.data["preview"] = {"mac": self.window.mac() if self.window else "", "kind": self.preview_kind,
+                                "n": time.time()}  # unique across DS5Tee restarts
+        self.save()
+
+    def reset(self, mac):
+        if mac:
+            self.data["pads"][mac] = dict(DEFAULTS)
+        else:
+            self.data["default"] = dict(DEFAULTS)
+        self.save_timer.start()
+        self.build_menu()
+        if self.window:
+            self.window.refresh()
+
+    def disconnect(self, mac):
+        subprocess.run(["bluetoothctl", "disconnect", mac], capture_output=True)
+
+    def set_touchpad(self, on):
+        self.data["touchpad_mouse"] = on
+        self.save_timer.start()
+        set_touchpad_mouse(on)
+        self.build_menu()
+
+    def save(self):
+        os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
+        with open(CONFIG + ".tmp", "w") as f:
+            json.dump(self.data, f, indent=1)
+        os.replace(CONFIG + ".tmp", CONFIG)
+
+    def build_menu(self):
+        """Per connected pad a submenu with trigger mode and player ID."""
+        self.menu.clear()
+        self.menu.addAction("Einstellungen …", self.show_settings)
+        self.menu.addSeparator()
+        if not self.pads:
+            self.menu.addAction("Kein DualSense verbunden").setEnabled(False)
+        for p in self.pads:
+            sub = self.menu.addMenu(pad_label(p))
+            cfg = self.settings(p["mac"])
+            for title, choices, keys in (("Trigger-Modus (L + R)", MODES, ("trigger_mode_l", "trigger_mode_r")),
+                                         ("Controller-ID", PLAYERS, ("player",))):
+                choice = sub.addMenu(title)
+                group = QActionGroup(choice)
+                for value, label in choices.items():
+                    a = QAction(label, choice, checkable=True, checked=all(cfg[k] == value for k in keys))
+                    a.triggered.connect(lambda _=False, m=p["mac"], ks=keys, v=value: [self.set(m, k, v) for k in ks])
+                    group.addAction(a)
+                    choice.addAction(a)
+            sub.addAction("Trennen", lambda m=p["mac"]: self.disconnect(m))
+        self.menu.addSeparator()
+        touch = self.menu.addAction("Touchpads als Maus")
+        touch.setCheckable(True)
+        touch.setChecked(self.data.get("touchpad_mouse", False))
+        touch.toggled.connect(self.set_touchpad)
+        self.menu.addAction("Beenden", self.quit)
+
+    def update_status(self):
+        set_touchpad_mouse(self.data.get("touchpad_mouse", False))  # also catches pads that reconnected
+        self.pads = load(STATUS, {}).get("pads", [])
+        self.tray.setToolTip("\n".join(pad_label(p) for p in self.pads) or "Kein DualSense verbunden")
+        if not self.menu.isVisible():  # labels carry the battery level; don't rebuild under the cursor
+            self.build_menu()
+        if self.window:
+            if [self.window.target.itemData(i) for i in range(self.window.target.count() - 1)] != \
+                    [p["mac"] for p in self.pads]:
+                self.window.refresh_targets()
+                self.window.refresh()
+            self.window.update_labels()
+
+    def show_settings(self):
+        if not self.window:
+            self.window = Settings(self)
+        self.window.refresh_targets()
+        self.window.refresh()
+        self.window.show()
+        self.window.raise_()
+        self.window.activateWindow()
+
+
+if __name__ == "__main__":
+    sys.exit(Tray().exec())
