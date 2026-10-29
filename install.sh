@@ -13,7 +13,8 @@ if [ "$1" = undo ]; then
     echo "DS5Tee entfernt."
     exit
 fi
-user=${SUDO_USER:-$(logname 2>/dev/null || echo root)}
+user=${SUDO_USER:-${PKEXEC_UID:+$(id -nu "$PKEXEC_UID")}}  # sudo or pkexec
+user=${user:-$(logname 2>/dev/null || echo root)}
 home=$(getent passwd "$user" | cut -d: -f6)
 install -Dm644 ds5bridge.py usb_report_desc.bin -t /usr/local/lib/ds5bridge/
 sed "s|@CONFIG@|$home/.config/ds5bridge.json|" ds5bridge.service > /etc/systemd/system/ds5bridge.service
