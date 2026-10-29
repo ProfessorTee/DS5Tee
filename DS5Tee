@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """DS5Tee: tray icon + settings window for ds5bridge, per controller: speaker, haptics, rumble (each with a
-short preview played by the bridge), trigger strength/mode per side, gyro on the right stick, lightbar colour, player LED,
+short preview played by the bridge), trigger strength/mode per side, gyro on the right stick, lightbar colour (fixed, by battery level or from the game), player LED,
 auto-disconnect time (read by bt-idle-disconnect.py) and a disconnect button, plus whether KDE uses
 DualSense touchpads as a mouse.
 Writes ~/.config/ds5bridge.json ({"default": {...}, "pads": {MAC: {...}}, "touchpad_mouse": bool});
@@ -15,7 +15,7 @@ CONFIG = os.path.expanduser("~/.config/ds5bridge.json")
 STATUS = "/run/ds5bridge/status.json"
 DEFAULTS = {"speaker": 50, "haptics": 100, "rumble": 100, "trigger_strength_l": 100, "trigger_strength_r": 100,
             "trigger_mode_l": "game", "trigger_mode_r": "game", "color": "", "player": 0, "idle_minutes": 15,
-            "gyro": "off", "gyro_sensitivity": 100}
+            "gyro": "off", "gyro_sensitivity": 37}
 MODES = {"game": "Vom Spiel", "off": "Aus", "resistance": "Widerstand", "weapon": "Waffe (Druckpunkt)",
          "vibration": "Vibration"}
 PLAYERS = {0: "Vom Spiel", 1: "1", 2: "2", 3: "3", 4: "4"}
@@ -65,39 +65,49 @@ class Settings(QDialog):
         self.target = QComboBox()
         self.target.activated.connect(lambda _: self.refresh())
         form.addRow("Controller", self.target)
-        self.sliders = {}
-        for key, label, top in (("speaker", "Lautsprecher", 100), ("haptics", "Haptik", 200),
-                                ("rumble", "Vibration", 100), ("trigger_strength_l", "Trigger L Stärke", 100),
-                                ("trigger_strength_r", "Trigger R Stärke", 100),
-                                ("gyro_sensitivity", "Gyro Empfindlichkeit", 300)):
-            slider = QSlider(Qt.Horizontal)
-            slider.setRange(0, top)
-            value = QLabel()
-            value.setMinimumWidth(40)
-            slider.valueChanged.connect(lambda v, k=key, l=value, sl=slider: (l.setText(f"{v} %"), self.set(k, v, sl)))
-            if key in PREVIEW:  # sample only when the drag ends, not while holding the handle
-                slider.sliderReleased.connect(lambda k=key: self.app.preview_soon(k, 200))
+        self.sliders, self.combos = {}, {}
+        rows = (("Lautsprecher", None, "speaker", 100), ("Haptik", None, "haptics", 200),
+                ("Vibration", None, "rumble", 100),
+                ("Trigger L", ("trigger_mode_l", MODES), "trigger_strength_l", 100),
+                ("Trigger R", ("trigger_mode_r", MODES), "trigger_strength_r", 100),
+                ("Gyro → rechter Stick", ("gyro", GYRO), "gyro_sensitivity", 300),
+                ("Controller-ID", ("player", PLAYERS), None, 0), ("Auto-Trennen", ("idle_minutes", IDLE), None, 0))
+        for label, combo_def, key, top in rows:  # mode combo and its strength slider share one row
             row = QHBoxLayout()
-            row.addWidget(slider)
-            row.addWidget(value)
+            if combo_def:
+                ckey, choices = combo_def
+                combo = QComboBox()
+                for k, v in choices.items():
+                    combo.addItem(v, k)
+                combo.activated.connect(lambda i, k=ckey, c=combo: self.set(k, c.itemData(i)))
+                row.addWidget(combo)
+                self.combos[ckey] = combo
+            if key:
+                slider = QSlider(Qt.Horizontal)
+                slider.setRange(0, top)
+                slider.setMinimumWidth(160)
+                value = QLabel()
+                value.setMinimumWidth(40)
+                slider.valueChanged.connect(lambda v, k=key, l=value, sl=slider: (l.setText(f"{v} %"), self.set(k, v, sl)))
+                if key in PREVIEW:  # sample only when the drag ends, not while holding the handle
+                    slider.sliderReleased.connect(lambda k=key: self.app.preview_soon(k, 200))
+                row.addWidget(slider, 1)
+                row.addWidget(value)
+                self.sliders[key] = (slider, value)
             form.addRow(label, row)
-            self.sliders[key] = (slider, value)
-        self.combos = {}
-        for key, label, choices in (("trigger_mode_l", "Trigger L Modus", MODES), ("trigger_mode_r", "Trigger R Modus", MODES),
-                                    ("gyro", "Gyro → rechter Stick", GYRO),
-                                    ("player", "Controller-ID", PLAYERS), ("idle_minutes", "Auto-Trennen", IDLE)):
-            combo = QComboBox()
-            for k, v in choices.items():
-                combo.addItem(v, k)
-            combo.activated.connect(lambda i, k=key, c=combo: self.set(k, c.itemData(i)))
-            form.addRow(label, combo)
-            self.combos[key] = combo
+        paired = [self.combos[k] for k in ("trigger_mode_l", "trigger_mode_r", "gyro")]  # same width: sliders line up
+        for c in paired:
+            c.setFixedWidth(max(c.sizeHint().width() for c in paired))
         self.color = QPushButton()
         self.color.clicked.connect(self.pick_color)
+        battery_color = QPushButton("Akkustand")
+        battery_color.setToolTip("Grün bei vollem Akku, über Gelb (50 %) bis Rot bei leerem Akku")
+        battery_color.clicked.connect(lambda: self.set("color", "battery"))
         game_color = QPushButton("Vom Spiel")
         game_color.clicked.connect(lambda: self.set("color", ""))
         row = QHBoxLayout()
         row.addWidget(self.color)
+        row.addWidget(battery_color)
         row.addWidget(game_color)
         form.addRow("Lichtleiste", row)
         self.touchpad = QCheckBox("Touchpads als Maus am Desktop (alle Controller)")
@@ -122,7 +132,7 @@ class Settings(QDialog):
             self.app.preview_soon(key, 1200)  # groove click, wheel, arrow keys: wait until the user stops
 
     def pick_color(self):
-        c = QColorDialog.getColor(QColor(self.app.settings(self.mac())["color"] or "#0050ff"), self,
+        c = QColorDialog.getColor(QColor(self.app.settings(self.mac())["color"].replace("battery", "") or "#0050ff"), self,
                                   "Farbe der Lichtleiste")
         if c.isValid():
             self.set("color", c.name())
@@ -151,9 +161,10 @@ class Settings(QDialog):
             value.setText(f"{cfg[key]} %")
         for key, combo in self.combos.items():
             combo.setCurrentIndex(max(0, combo.findData(cfg[key])))
-        self.color.setText(cfg["color"] or "Farbe wählen …")
+        own = cfg["color"].startswith("#")
+        self.color.setText(cfg["color"] if own else "Akkustand" if cfg["color"] == "battery" else "Farbe wählen …")
         self.disconnect.setEnabled(bool(self.mac()))
-        self.color.setStyleSheet(f"background: {cfg['color']}" if cfg["color"] else "")
+        self.color.setStyleSheet(f"background: {cfg['color']}" if own else "")
         self.touchpad.blockSignals(True)
         self.touchpad.setChecked(self.app.data.get("touchpad_mouse", False))
         self.touchpad.blockSignals(False)

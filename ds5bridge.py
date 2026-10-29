@@ -35,7 +35,7 @@ CONFIG_PATH = os.environ.get("DS5BRIDGE_CONFIG", "/etc/ds5bridge.json")  # writt
 STATUS_PATH = "/run/ds5bridge/status.json"  # read by DS5Tee
 DEFAULTS = {"speaker": 50, "haptics": 100, "rumble": 100, "trigger_strength_l": 100, "trigger_strength_r": 100,
             "trigger_mode_l": "game", "trigger_mode_r": "game", "color": "", "player": 0, "idle_minutes": 15,
-            "gyro": "off", "gyro_sensitivity": 100}
+            "gyro": "off", "gyro_sensitivity": 37}
 PLAYER_LEDS = {1: 0x04, 2: 0x0A, 3: 0x15, 4: 0x1B}
 TRIGGER_EFFECTS = {  # raw DualSense trigger effects (mode, params...), forced per trigger
     "off": [0x05],
@@ -89,7 +89,13 @@ def scale_effect(e, pct):
     # ponytail: bow (0x22), galloping (0x23), machine (0x27) unscaled; add them if a game uses them
 
 
-def apply_settings(body, cfg):
+def battery_color(pct):
+    """Lightbar by battery: green at 100 %, yellow at 50 %, red at 0 %."""
+    pct = 50 if pct is None else pct
+    return bytes([255 if pct <= 50 else round(255 * (100 - pct) / 50), 255 if pct >= 50 else round(255 * pct / 50), 0])
+
+
+def apply_settings(body, cfg, battery=None):
     """User overrides on an outgoing SetStateData (common part, 47 bytes, report id stripped)."""
     if body[0] & 0x03:  # rumble motors: scale the values and the pad's own rumble power (high nibble)
         body[2] = body[2] * cfg["rumble"] // 100
@@ -106,7 +112,7 @@ def apply_settings(body, cfg):
             body[lo:lo + 11] = e
     if cfg["color"]:
         body[1] |= 0x04
-        body[44:47] = bytes.fromhex(cfg["color"].lstrip("#"))
+        body[44:47] = battery_color(battery) if cfg["color"] == "battery" else bytes.fromhex(cfg["color"].lstrip("#"))
     if cfg["player"] in PLAYER_LEDS:
         body[1] |= 0x10
         body[43] = PLAYER_LEDS[cfg["player"]]
@@ -388,7 +394,11 @@ class Bridge:
                 if bool(r[55] & 1) != self.headset:
                     self.headset = not self.headset
                     self.audio_route()
-                self.battery = min(100, (r[54] & 0x0F) * 10 + 5), r[54] >> 4 == 1
+                battery = min(100, (r[54] & 0x0F) * 10 + 5), r[54] >> 4 == 1
+                if battery[0] != self.battery[0] and self.cfg["color"] == "battery":
+                    self.battery = battery
+                    self.audio_route()  # pushes the new lightbar colour
+                self.battery = battery
                 controls = r[2:8] + r[9:12]  # sticks, analog triggers, buttons
                 if self.controls is None or controls[6:] != self.controls[6:] or \
                         max(abs(a - b) for a, b in zip(controls[:6], self.controls[:6])) > 26:  # > ~10 %: no jitter
@@ -432,7 +442,7 @@ class Bridge:
         r[0], r[1], r[2] = 0x31, self.seq << 4, 0x10
         self.seq = (self.seq + 1) & 0x0F
         body = bytearray(data[1:48]).ljust(47, b"\0")  # SetStateData common part
-        apply_settings(body, self.cfg)
+        apply_settings(body, self.cfg, self.battery[0])
         r[3:50] = body
         r[74:78] = bt_crc(0xA2, bytes(r[:74]))
         os.write(self.real, bytes(r))

@@ -36,7 +36,7 @@ Einstellungen **pro Controller** (oder als Standard für neue Controller):
 - Trigger L / R: Stärke und Modus (*vom Spiel*, *aus*, *Widerstand*, *Waffe*, *Vibration*)
 - Gyro auf den rechten Stick (aus / beim Zielen mit L2 / immer) mit Empfindlichkeit – wie bei der Switch:
   grob mit dem Stick, fein durch Kippen; funktioniert ohne Steam Input in jedem Spiel
-- Farbe der Lichtleiste, Controller-ID (Spieler-LEDs 1–4)
+- Lichtleiste: eigene Farbe, nach Akkustand (grün → gelb → rot) oder vom Spiel; Controller-ID (Spieler-LEDs 1–4)
 - Auto-Trennen nach Leerlauf, Controller trennen, Zurücksetzen
 - Touchpad als Maus am Desktop an/aus (KDE Plasma)
 - Akkustand im Tooltip
