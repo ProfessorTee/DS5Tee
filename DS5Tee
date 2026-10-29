@@ -15,7 +15,8 @@ CONFIG = os.path.expanduser("~/.config/ds5bridge.json")
 STATUS = "/run/ds5bridge/status.json"
 DEFAULTS = {"speaker": 50, "haptics": 100, "rumble": 100, "trigger_strength_l": 100, "trigger_strength_r": 100,
             "trigger_mode_l": "game", "trigger_mode_r": "game", "color": "", "player": 0, "idle_minutes": 15,
-            "gyro": "off", "gyro_sensitivity": 37}
+            "gyro": "off", "gyro_sensitivity": 37,
+            "gyro_invert_x": False, "gyro_invert_y": False}
 MODES = {"game": "Vom Spiel", "off": "Aus", "resistance": "Widerstand", "weapon": "Waffe (Druckpunkt)",
          "vibration": "Vibration"}
 PLAYERS = {0: "Vom Spiel", 1: "1", 2: "2", 3: "3", 4: "4"}
@@ -65,7 +66,7 @@ class Settings(QDialog):
         self.target = QComboBox()
         self.target.activated.connect(lambda _: self.refresh())
         form.addRow("Controller", self.target)
-        self.sliders, self.combos = {}, {}
+        self.sliders, self.combos, self.checks = {}, {}, {}
         rows = (("Lautsprecher", None, "speaker", 100), ("Haptik", None, "haptics", 200),
                 ("Vibration", None, "rumble", 100),
                 ("Trigger L", ("trigger_mode_l", MODES), "trigger_strength_l", 100),
@@ -95,6 +96,15 @@ class Settings(QDialog):
                 row.addWidget(value)
                 self.sliders[key] = (slider, value)
             form.addRow(label, row)
+            if key == "gyro_sensitivity":
+                row = QHBoxLayout()
+                for k, text in (("gyro_invert_x", "Horizontal"), ("gyro_invert_y", "Vertikal")):
+                    check = QCheckBox(text)
+                    check.toggled.connect(lambda on, k=k: self.set(k, on))
+                    row.addWidget(check)
+                    self.checks[k] = check
+                row.addStretch()
+                form.addRow("Gyro spiegeln", row)
         paired = [self.combos[k] for k in ("trigger_mode_l", "trigger_mode_r", "gyro")]  # same width: sliders line up
         for c in paired:
             c.setFixedWidth(max(c.sizeHint().width() for c in paired))
@@ -161,6 +171,10 @@ class Settings(QDialog):
             value.setText(f"{cfg[key]} %")
         for key, combo in self.combos.items():
             combo.setCurrentIndex(max(0, combo.findData(cfg[key])))
+        for key, check in self.checks.items():
+            check.blockSignals(True)
+            check.setChecked(cfg[key])
+            check.blockSignals(False)
         own = cfg["color"].startswith("#")
         self.color.setText(cfg["color"] if own else "Akkustand" if cfg["color"] == "battery" else "Farbe wählen …")
         self.disconnect.setEnabled(bool(self.mac()))

@@ -35,7 +35,8 @@ CONFIG_PATH = os.environ.get("DS5BRIDGE_CONFIG", "/etc/ds5bridge.json")  # writt
 STATUS_PATH = "/run/ds5bridge/status.json"  # read by DS5Tee
 DEFAULTS = {"speaker": 50, "haptics": 100, "rumble": 100, "trigger_strength_l": 100, "trigger_strength_r": 100,
             "trigger_mode_l": "game", "trigger_mode_r": "game", "color": "", "player": 0, "idle_minutes": 15,
-            "gyro": "off", "gyro_sensitivity": 37}
+            "gyro": "off", "gyro_sensitivity": 37,
+            "gyro_invert_x": False, "gyro_invert_y": False}
 PLAYER_LEDS = {1: 0x04, 2: 0x0A, 3: 0x15, 4: 0x1B}
 TRIGGER_EFFECTS = {  # raw DualSense trigger effects (mode, params...), forced per trigger
     "off": [0x05],
@@ -415,7 +416,8 @@ class Bridge:
         if mode == "off" or mode == "aim" and r[6] < 64:  # aim = while L2 is pressed
             return r[2:65]
         full = GYRO_DPS * GYRO_LSB * 100 / max(1, self.cfg["gyro_sensitivity"])
-        gx, gy = -rate[1] / full, -rate[0] / full
+        gx = -rate[1] / full * (-1 if self.cfg["gyro_invert_x"] else 1)
+        gy = -rate[0] / full * (-1 if self.cfg["gyro_invert_y"] else 1)
         m = math.hypot(gx, gy)
         if m:
             k = max(0.0, m - GYRO_NOISE * GYRO_LSB / full) / m
