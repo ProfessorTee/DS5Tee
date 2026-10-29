@@ -492,6 +492,17 @@ class Bridge:
         r[38] = SPEAKER_PREGAIN  # audio_control2 (common offset 37)
         self.output(bytes(r))
 
+    def release_triggers(self, old):
+        """Forced mode -> "game": clear the forced effect, games without trigger support never overwrite it."""
+        r = bytearray(48)
+        r[0] = 0x02
+        for side, flag, lo in (("r", 0x04, 11), ("l", 0x08, 22)):
+            if old["trigger_mode_" + side] != "game" and self.cfg["trigger_mode_" + side] == "game":
+                r[1] |= flag
+                r[lo] = 0x05  # off
+        if r[1]:
+            self.output(bytes(r))
+
     def pcm(self, data):
         """4-ch s16 PCM from the USB audio stream; every 2 x 512 frames -> one BT 0x39 report."""
         self.pcm_buf += data
@@ -548,9 +559,10 @@ def main():
                 for b in bridges.values():
                     new = settings_for(b.mac)
                     if new != b.cfg:
-                        b.cfg = new
+                        old, b.cfg = b.cfg, new
                         print(f"settings {b.mac} {new}", flush=True)
                         b.audio_route()  # pushes triggers, lightbar, player LEDs right away
+                        b.release_triggers(old)
                 p = config.get("preview", {})
                 if p.get("n") != last_preview:
                     last_preview = p.get("n")
