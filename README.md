@@ -61,7 +61,8 @@ sudo ./install.sh
 ```
 
 Das installiert den Systemdienst `ds5bridge` und das Tray-Tool `DS5Tee` (startet bei der Anmeldung).
-Danach den DualSense ganz normal per Bluetooth verbinden.
+Danach den DualSense ganz normal per Bluetooth verbinden – auch während ein Spiel schon läuft
+(getestet mit Monster Hunter Wilds: Haptik kommt nach dem Verbinden im laufenden Spiel an).
 
 - Log: `journalctl -u ds5bridge -f`
 - Einstellungen: `~/.config/ds5bridge.json` (schreibt DS5Tee)
