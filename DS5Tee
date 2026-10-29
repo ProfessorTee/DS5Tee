@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """DS5Tee: tray icon + settings window for ds5bridge, per controller: speaker, haptics, rumble (each with a
-short preview played by the bridge), trigger strength/mode per side, lightbar colour, player LED,
+short preview played by the bridge), trigger strength/mode per side, gyro on the right stick, lightbar colour, player LED,
 auto-disconnect time (read by bt-idle-disconnect.py) and a disconnect button, plus whether KDE uses
 DualSense touchpads as a mouse.
 Writes ~/.config/ds5bridge.json ({"default": {...}, "pads": {MAC: {...}}, "touchpad_mouse": bool});
@@ -14,10 +14,12 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
 CONFIG = os.path.expanduser("~/.config/ds5bridge.json")
 STATUS = "/run/ds5bridge/status.json"
 DEFAULTS = {"speaker": 50, "haptics": 100, "rumble": 100, "trigger_strength_l": 100, "trigger_strength_r": 100,
-            "trigger_mode_l": "game", "trigger_mode_r": "game", "color": "", "player": 0, "idle_minutes": 15}
+            "trigger_mode_l": "game", "trigger_mode_r": "game", "color": "", "player": 0, "idle_minutes": 15,
+            "gyro": "off", "gyro_sensitivity": 100}
 MODES = {"game": "Vom Spiel", "off": "Aus", "resistance": "Widerstand", "weapon": "Waffe (Druckpunkt)",
          "vibration": "Vibration"}
 PLAYERS = {0: "Vom Spiel", 1: "1", 2: "2", 3: "3", 4: "4"}
+GYRO = {"off": "Aus", "aim": "Beim Zielen (L2 gedrückt)", "always": "Immer"}
 IDLE = {0: "Nie", 5: "5 min", 10: "10 min", 15: "15 min", 30: "30 min", 60: "60 min"}
 PREVIEW = ("speaker", "haptics", "rumble")  # sliders that play a sample in the controller
 DEFAULT_KEY = ""  # the "default" section: used by controllers without own settings
@@ -66,7 +68,8 @@ class Settings(QDialog):
         self.sliders = {}
         for key, label, top in (("speaker", "Lautsprecher", 100), ("haptics", "Haptik", 200),
                                 ("rumble", "Vibration", 100), ("trigger_strength_l", "Trigger L Stärke", 100),
-                                ("trigger_strength_r", "Trigger R Stärke", 100)):
+                                ("trigger_strength_r", "Trigger R Stärke", 100),
+                                ("gyro_sensitivity", "Gyro Empfindlichkeit", 300)):
             slider = QSlider(Qt.Horizontal)
             slider.setRange(0, top)
             value = QLabel()
@@ -81,6 +84,7 @@ class Settings(QDialog):
             self.sliders[key] = (slider, value)
         self.combos = {}
         for key, label, choices in (("trigger_mode_l", "Trigger L Modus", MODES), ("trigger_mode_r", "Trigger R Modus", MODES),
+                                    ("gyro", "Gyro → rechter Stick", GYRO),
                                     ("player", "Controller-ID", PLAYERS), ("idle_minutes", "Auto-Trennen", IDLE)):
             combo = QComboBox()
             for k, v in choices.items():
@@ -102,7 +106,7 @@ class Settings(QDialog):
         self.disconnect = QPushButton("Controller trennen")
         self.disconnect.clicked.connect(lambda: self.app.disconnect(self.mac()))
         reset = QPushButton("Zurücksetzen")
-        reset.setToolTip("Alles auf Standard: Lautsprecher 50 %, übrige Regler 100 %, Trigger/Farbe/ID vom Spiel, Auto-Trennen 15 min")
+        reset.setToolTip("Alles auf Standard: Lautsprecher 50 %, übrige Regler 100 %, Trigger/Farbe/ID vom Spiel, Gyro aus, Auto-Trennen 15 min")
         reset.clicked.connect(lambda: self.app.reset(self.mac()))
         row = QHBoxLayout()
         row.addWidget(reset)

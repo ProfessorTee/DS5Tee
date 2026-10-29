@@ -16,7 +16,7 @@ then see a real USB device with one container, exactly like a cable.
 Runs as root: needs vhci_hcd and hides the real Bluetooth nodes from users, so games and
 Steam only see the USB pad. Other Bluetooth devices are untouched.
 """
-import ctypes, fcntl, glob, json, heapq, os, select, socket, struct, subprocess, sys, time, zlib
+import ctypes, fcntl, glob, json, heapq, math, os, select, socket, struct, subprocess, sys, time, zlib
 import numpy as np
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -25,12 +25,17 @@ VHCI = "/sys/devices/platform/vhci_hcd.0"
 AFRAME = 512 * 4 * 2  # 512 frames x 4 ch x s16 = 10.67 ms -> one haptics + one speaker frame
 HAPTICS_GAIN = 2.0  # at haptics 100 %; DS5Dongle allows 1.0-2.0, 1.0 felt weak
 SPEAKER_GAIN = 2.5  # at speaker 100 %: digital boost before Opus, soft-clipped; the BT speaker path is quieter than a PS5
+GYRO_DPS = 60  # turn rate (deg/s) for full right-stick deflection at gyro sensitivity 100 %
+GYRO_LSB = 16.4  # raw gyro units per deg/s (+-2000 deg/s range)
+GYRO_NOISE = 1.5  # deg/s subtracted from the turn rate: hand tremor and sensor noise
+GAME_DEADZONE = 0.15  # usual game stick deadzone; gyro-only motion starts just past it so fine aim isn't swallowed
 SPEAKER_PREGAIN = 7  # speaker pre-amp gain 1-7 (DS5Dongle default 2); PS5 games sound louder than 2
 EPIPE, ECONNRESET = -32, -104
 CONFIG_PATH = os.environ.get("DS5BRIDGE_CONFIG", "/etc/ds5bridge.json")  # written by DS5Tee
 STATUS_PATH = "/run/ds5bridge/status.json"  # read by DS5Tee
 DEFAULTS = {"speaker": 50, "haptics": 100, "rumble": 100, "trigger_strength_l": 100, "trigger_strength_r": 100,
-            "trigger_mode_l": "game", "trigger_mode_r": "game", "color": "", "player": 0, "idle_minutes": 15}
+            "trigger_mode_l": "game", "trigger_mode_r": "game", "color": "", "player": 0, "idle_minutes": 15,
+            "gyro": "off", "gyro_sensitivity": 100}
 PLAYER_LEDS = {1: 0x04, 2: 0x0A, 3: 0x15, 4: 0x1B}
 TRIGGER_EFFECTS = {  # raw DualSense trigger effects (mode, params...), forced per trigger
     "off": [0x05],
@@ -357,6 +362,7 @@ class Bridge:
         self.cfg = settings_for(mac)
         self.timers = []  # (due, callable) for previews
         self.controls, self.active_at = None, time.monotonic()  # for auto-disconnect when idle
+        self.gbias = [0.0, 0.0]  # gyro pitch/yaw at rest
         self.nout, self.tout = 0, time.monotonic()  # output reports per second, for the log
         self.pcm_buf, self.frames, self.opus = b"", [], Opus()
         self.usb = Usb(self)
@@ -387,7 +393,31 @@ class Bridge:
                 if self.controls is None or controls[6:] != self.controls[6:] or \
                         max(abs(a - b) for a, b in zip(controls[:6], self.controls[:6])) > 26:  # > ~10 %: no jitter
                     self.controls, self.active_at = controls, time.monotonic()
-                self.usb.input(b"\x01" + r[2:65])
+                self.usb.input(b"\x01" + self.gyro_aim(r))
+
+    def gyro_aim(self, r):
+        """Gyro -> right stick, added to the thumb (Switch style: stick for coarse, tilting for fine aim)."""
+        pitch, yaw = struct.unpack_from("<hh", r, 17)
+        rate = [pitch - self.gbias[0], yaw - self.gbias[1]]
+        if max(map(abs, rate)) < 3 * GYRO_LSB:  # held still: follow the sensor's slow bias drift
+            self.gbias = [b + d / 2000 for b, d in zip(self.gbias, rate)]
+        mode = self.cfg["gyro"]
+        if mode == "off" or mode == "aim" and r[6] < 64:  # aim = while L2 is pressed
+            return r[2:65]
+        full = GYRO_DPS * GYRO_LSB * 100 / max(1, self.cfg["gyro_sensitivity"])
+        gx, gy = -rate[1] / full, -rate[0] / full
+        m = math.hypot(gx, gy)
+        if m:
+            k = max(0.0, m - GYRO_NOISE * GYRO_LSB / full) / m
+            gx, gy, m = gx * k, gy * k, m * k
+        sx, sy = (r[4] - 128) / 127, (r[5] - 128) / 127
+        if m and math.hypot(sx, sy) < GAME_DEADZONE:  # thumb resting: lift the gyro motion past the game's deadzone
+            k = (GAME_DEADZONE + m * (1 - GAME_DEADZONE)) / m
+            gx, gy, sx, sy = gx * k, gy * k, 0, 0
+        out = bytearray(r[2:65])
+        out[2] = max(0, min(255, round(128 + (sx + gx) * 127)))
+        out[3] = max(0, min(255, round(128 + (sy + gy) * 127)))
+        return bytes(out)
 
     def output(self, data):
         """USB output 0x02 -> BT output 0x31."""
