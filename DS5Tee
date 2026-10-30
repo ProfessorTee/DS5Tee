@@ -28,6 +28,11 @@ MODES = {"game": t("Vom Spiel", "From game"), "off": t("Aus", "Off"), "resistanc
          "weapon": t("Waffe (Druckpunkt)", "Weapon (trigger point)"), "vibration": "Vibration"}
 PLAYERS = {0: t("Vom Spiel", "From game"), 1: "1", 2: "2", 3: "3", 4: "4"}
 GYRO = {"off": t("Aus", "Off"), "aim": t("Beim Zielen (L2 gedrückt)", "While aiming (L2 held)"), "always": t("Immer", "Always")}
+BRIDGE_LABEL = t("Kabel-Emulation (echten Controller verstecken)", "Wired emulation (hide the real controller)")
+BRIDGE_TIP = t("Aus: Der Controller ist ein normaler Bluetooth-Controller – ohne Haptik, Lautsprecher und adaptive "
+               "Trigger in Spielen. Nach dem Umschalten das Spiel neu starten.",
+               "Off: the controller is a plain Bluetooth controller – no haptics, speaker or adaptive triggers in "
+               "games. Restart the game after switching.")
 IDLE = {0: t("Nie", "Never"), 5: "5 min", 10: "10 min", 15: "15 min", 30: "30 min", 60: "60 min"}
 PREVIEW = ("speaker", "haptics", "rumble")  # sliders that play a sample in the controller
 DEFAULT_KEY = ""  # the "default" section: used by controllers without own settings
@@ -40,6 +45,45 @@ def load(path, default):
             return json.load(f)
     except (OSError, ValueError):
         return default
+
+
+ASM_OVERRIDES = os.path.expanduser("~/.config/arctis_manager/routing_overrides.json")
+WINE_BINARIES = {"wine64-preloader", "wine-preloader", "wine", "wine64"}
+
+
+def keep_haptics_on_pad():
+    """Arctis Sound Manager moves every Wine stream onto the headset, the pad's 4-channel haptics/speaker
+    stream too (the pad's audio endpoint has 4 channels). Pin those apps to the DualSense sink in ASM's own
+    override list, which its router re-reads every few seconds."""
+    if not os.path.exists(ASM_OVERRIDES):
+        return
+    try:
+        graph = json.loads(subprocess.run(["pw-dump"], capture_output=True, text=True, timeout=5).stdout)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return
+    props = {o["id"]: o.get("info", {}).get("props", {}) for o in graph if o.get("type") == "PipeWire:Interface:Node"}
+    # ponytail: first DualSense sink; with two pads in two games each stream could need its own pad
+    sink = next((p["node.name"] for p in props.values()
+                 if p.get("media.class") == "Audio/Sink" and "DualSense" in p.get("node.name", "")), None)
+    if not sink:
+        return
+    channels = {}
+    for o in graph:
+        info = o.get("info", {})
+        if o.get("type") == "PipeWire:Interface:Port" and info.get("direction") == "output":
+            channels.setdefault(info["props"].get("node.id"), []).append(info["props"].get("audio.channel"))
+    # Wine opens the pad either via winepulse (FL FR RL RR, named after the .exe) or via its ALSA
+    # driver ("PipeWire ALSA [wine64-preloader]", AUX0-3); game audio itself is stereo/5.1/7.1.
+    apps = {p.get("application.name") for i, p in props.items()
+            if p.get("media.class") == "Stream/Output/Audio" and len(channels.get(i, [])) == 4
+            and (p.get("application.process.binary") in WINE_BINARIES or "wine" in p.get("application.name", ""))}
+    overrides = load(ASM_OVERRIDES, {})
+    if all(overrides.get(a) == sink for a in apps):
+        return
+    overrides.update({a: sink for a in apps if a})
+    with open(ASM_OVERRIDES + ".tmp", "w") as f:
+        json.dump(overrides, f, indent=2)
+    os.replace(ASM_OVERRIDES + ".tmp", ASM_OVERRIDES)
 
 
 def set_touchpad_mouse(enabled):
@@ -130,6 +174,10 @@ class Settings(QDialog):
         self.touchpad = QCheckBox(t("Touchpads als Maus am Desktop (alle Controller)", "Touchpads as desktop mouse (all controllers)"))
         self.touchpad.toggled.connect(self.app.set_touchpad)
         form.addRow(self.touchpad)
+        self.bridge = QCheckBox(BRIDGE_LABEL)
+        self.bridge.setToolTip(BRIDGE_TIP)
+        self.bridge.toggled.connect(self.app.set_bridge)
+        form.addRow(self.bridge)
         self.disconnect = QPushButton(t("Controller trennen", "Disconnect controller"))
         self.disconnect.clicked.connect(lambda: self.app.disconnect(self.mac()))
         reset = QPushButton(t("Zurücksetzen", "Reset"))
@@ -190,6 +238,9 @@ class Settings(QDialog):
         self.touchpad.blockSignals(True)
         self.touchpad.setChecked(self.app.data.get("touchpad_mouse", False))
         self.touchpad.blockSignals(False)
+        self.bridge.blockSignals(True)
+        self.bridge.setChecked(self.app.data.get("bridge", True))
+        self.bridge.blockSignals(False)
 
 
 class Tray(QApplication):
@@ -256,6 +307,11 @@ class Tray(QApplication):
     def disconnect(self, mac):
         subprocess.run(["bluetoothctl", "disconnect", mac], capture_output=True)
 
+    def set_bridge(self, on):
+        self.data["bridge"] = on
+        self.save_timer.start()
+        self.build_menu()
+
     def set_touchpad(self, on):
         self.data["touchpad_mouse"] = on
         self.save_timer.start()
@@ -293,12 +349,20 @@ class Tray(QApplication):
         touch.setCheckable(True)
         touch.setChecked(self.data.get("touchpad_mouse", False))
         touch.toggled.connect(self.set_touchpad)
+        bridge = self.menu.addAction(BRIDGE_LABEL)
+        bridge.setCheckable(True)
+        bridge.setChecked(self.data.get("bridge", True))
+        bridge.toggled.connect(self.set_bridge)
         self.menu.addAction(t("Beenden", "Quit"), self.quit)
 
     def update_status(self):
         set_touchpad_mouse(self.data.get("touchpad_mouse", False))  # also catches pads that reconnected
         self.pads = load(STATUS, {}).get("pads", [])
-        self.tray.setToolTip("\n".join(pad_label(p) for p in self.pads) or t("Kein DualSense verbunden", "No DualSense connected"))
+        self.tray.setToolTip("\n".join(pad_label(p) for p in self.pads) or (
+            t("Kein DualSense verbunden", "No DualSense connected") if self.data.get("bridge", True)
+            else t("Kabel-Emulation aus", "Wired emulation off")))
+        if self.pads:
+            keep_haptics_on_pad()
         if not self.menu.isVisible():  # labels carry the battery level; don't rebuild under the cursor
             self.build_menu()
         if self.window:

@@ -26,8 +26,8 @@ Linux, PipeWire and Proton see a real USB device:
 | USB audio (4 channels, 48 kHz) | channels 3/4 → haptics (3 kHz, int8), channels 1/2 → speaker (Opus), Bluetooth report `0x39` |
 | Feature reports | read: passed through · write: only `0x80` and `0x60–0x62` (others drop the connection) |
 
-The real Bluetooth controller is hidden from games and Steam so it doesn't show up twice: a udev rule
-(`72-ds5bridge-hide.rules`) makes its nodes root-only the moment they appear, before anything can open them.
+The real Bluetooth controller is hidden from games and Steam so it doesn't show up twice: while the bridge runs, a udev rule
+(in `/run/udev/rules.d`) makes its nodes root-only the moment they appear, before anything can open them.
 Other Bluetooth devices (keyboard, mouse, other gamepads) are left alone.
 
 ## DS5Tee – the tray tool
@@ -42,6 +42,8 @@ Settings **per controller** (or as the default for new controllers):
 - Auto-disconnect when idle, disconnect controller, reset
 - Touchpad as desktop mouse on/off (KDE Plasma)
 - Battery level in the tooltip
+- *Wired emulation* on/off: off turns the pad back into a plain Bluetooth pad (restart the game after switching)
+- Keeps the pad's haptics/speaker stream on the controller when [Arctis Sound Manager](https://github.com/loteran/Arctis-Sound-Manager) would route all game audio to the headset
 
 The interface follows the system language: German on German systems, English otherwise.
 

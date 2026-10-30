@@ -16,7 +16,7 @@ then see a real USB device with one container, exactly like a cable.
 Runs as root: needs vhci_hcd and hides the real Bluetooth nodes from users, so games and
 Steam only see the USB pad. Other Bluetooth devices are untouched.
 """
-import ctypes, fcntl, glob, json, heapq, math, os, select, socket, struct, subprocess, sys, time, zlib
+import ctypes, fcntl, glob, json, heapq, math, os, select, signal, socket, struct, subprocess, sys, time, zlib
 import numpy as np
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -44,7 +44,15 @@ TRIGGER_EFFECTS = {  # raw DualSense trigger effects (mode, params...), forced p
     "weapon": [0x02, 0x40, 0xA0, 0xFF],  # section: start, end, force
     "vibration": [0x06, 0x28, 0xC0, 0x30],  # frequency, amplitude, start position
 }
-config = {}  # {"default": {...}, "pads": {MAC: {...}}} as written by DS5Tee
+config = {}  # {"default": {...}, "pads": {MAC: {...}}, "bridge": bool} as written by DS5Tee
+# Real Bluetooth DualSense nodes root-only from the moment they appear. Hiding them afterwards is too late
+# when Steam or a running game opens them first: they keep that handle, see a second pad and fight the
+# bridge over lightbar and player LEDs. In /run, so it only applies while the bridge runs and is enabled.
+HIDE_RULE_PATH = "/run/udev/rules.d/72-ds5bridge-hide.rules"
+HIDE_RULE = """\
+SUBSYSTEM=="hidraw", KERNELS=="0005:054C:0CE6.*", MODE="0600", TAG-="uaccess"
+SUBSYSTEM=="input", KERNELS=="0005:054C:0CE6.*", MODE="0600", TAG-="uaccess"
+"""
 
 
 def load_config():
@@ -57,6 +65,23 @@ def load_config():
         new = {}
     changed, config = new != config, new
     return changed
+
+
+def set_hiding(on):
+    """Bridge on: install the hide rule. Off: drop it and let udev give connected pads back to the user."""
+    if on == os.path.exists(HIDE_RULE_PATH):
+        return
+    if on:
+        os.makedirs(os.path.dirname(HIDE_RULE_PATH), exist_ok=True)
+        with open(HIDE_RULE_PATH, "w") as f:
+            f.write(HIDE_RULE)
+    else:
+        os.remove(HIDE_RULE_PATH)
+    subprocess.run(["udevadm", "control", "--reload"], check=False)
+    if not on:
+        subprocess.run(["udevadm", "trigger", "--action=change", "--subsystem-match=hidraw", "--subsystem-match=input"],
+                       check=False)
+    print(f"hiding real pads: {on}", flush=True)
 
 
 def settings_for(mac):
@@ -582,9 +607,10 @@ class Bridge:
 def write_status(bridges):
     pads = [{"mac": b.mac, "battery": b.battery[0], "charging": b.battery[1], "headset": b.headset}
             for b in bridges.values()]
+    enabled = config.get("bridge", True)
     os.makedirs(os.path.dirname(STATUS_PATH), exist_ok=True)
     with open(STATUS_PATH + ".tmp", "w") as f:
-        json.dump({"pads": pads}, f)
+        json.dump({"pads": pads, "bridge": enabled}, f)
     os.replace(STATUS_PATH + ".tmp", STATUS_PATH)
 
 
@@ -612,7 +638,9 @@ def main():
                         if p.get("mac") in ("", b.mac):  # "" = default section: all pads
                             b.preview(p.get("kind"))
         if now >= next_scan:
-            current = bt_dualsenses()
+            enabled = config.get("bridge", True)  # off: real pads stay plain Bluetooth pads
+            set_hiding(enabled)
+            current = bt_dualsenses() if enabled else {}
             for path in list(bridges):
                 if path not in current:
                     bridges.pop(path).close()
@@ -651,7 +679,10 @@ def main():
 
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     try:
         main()
     except KeyboardInterrupt:
-        sys.exit(0)
+        pass
+    finally:
+        set_hiding(False)  # without the bridge a hidden pad would be unusable
