@@ -5,6 +5,7 @@
 set -e
 cd "$(dirname "$0")"
 if [ "$1" = undo ]; then
+    pkill -f '^python3 /usr/local/bin/DS5Tee' || true
     systemctl disable --now ds5bridge.service || true
     rm -rf /usr/local/lib/ds5bridge /etc/systemd/system/ds5bridge.service /usr/local/bin/DS5Tee \
         /usr/share/applications/DS5Tee.desktop /etc/xdg/autostart/DS5Tee.desktop \
@@ -29,7 +30,13 @@ systemctl restart ds5bridge.service
 sleep 1
 if systemctl is-active -q ds5bridge.service; then
     echo "DS5Tee installed, bridge running (log: journalctl -u ds5bridge -f)"
-    echo "Start the tray tool: DS5Tee (starts automatically at login from now on)"
+    # An open tray tool still runs the old code: restart it in the user's session
+    if pkill -u "$user" -f '^python3 /usr/local/bin/DS5Tee'; then
+        sleep 1
+        systemd-run --user -M "$user@" --collect -q /usr/local/bin/DS5Tee && echo "DS5Tee restarted"
+    else
+        echo "Start the tray tool: DS5Tee (starts automatically at login from now on)"
+    fi
 else
     echo "ds5bridge is NOT running:"; journalctl -u ds5bridge -n 10 --no-pager; exit 1
 fi
