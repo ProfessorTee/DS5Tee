@@ -1,7 +1,8 @@
 [Desktop Entry]
 Type=Application
 Name=DS5Tee
-Comment=DualSense über Bluetooth wie per Kabel: Trigger, Haptik, Lautsprecher
+Comment=DualSense over Bluetooth like wired: triggers, haptics, speaker
+Comment[de]=DualSense über Bluetooth wie per Kabel: Trigger, Haptik, Lautsprecher
 Exec=/usr/local/bin/DS5Tee
 Icon=input-gamepad
 Categories=Settings;Game;

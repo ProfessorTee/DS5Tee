@@ -42,7 +42,7 @@ Settings **per controller** (or as the default for new controllers):
 - Touchpad as desktop mouse on/off (KDE Plasma)
 - Battery level in the tooltip
 
-The tray tool's interface is in German.
+The interface follows the system language: German on German systems, English otherwise.
 
 ## Requirements
 

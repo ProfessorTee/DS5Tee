@@ -43,6 +43,8 @@ Einstellungen **pro Controller** (oder als Standard für neue Controller):
 - Touchpad als Maus am Desktop an/aus (KDE Plasma)
 - Akkustand im Tooltip
 
+Die Oberfläche folgt der Systemsprache: Deutsch auf deutschen Systemen, sonst Englisch.
+
 ## Voraussetzungen
 
 - Linux mit `vhci_hcd` (Teil des Standard-Kernels, USB/IP) und BlueZ

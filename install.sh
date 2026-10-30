@@ -10,7 +10,7 @@ if [ "$1" = undo ]; then
         /usr/share/applications/DS5Tee.desktop /etc/xdg/autostart/DS5Tee.desktop
     systemctl daemon-reload
     udevadm trigger --subsystem-match=hidraw --subsystem-match=input  # restore permissions of hidden nodes
-    echo "DS5Tee entfernt."
+    echo "DS5Tee removed."
     exit
 fi
 user=${SUDO_USER:-${PKEXEC_UID:+$(id -nu "$PKEXEC_UID")}}  # sudo or pkexec
@@ -26,8 +26,8 @@ systemctl enable --now ds5bridge.service
 systemctl restart ds5bridge.service
 sleep 1
 if systemctl is-active -q ds5bridge.service; then
-    echo "DS5Tee installiert, Brücke läuft (Log: journalctl -u ds5bridge -f)"
-    echo "Tray-Tool starten: DS5Tee (startet künftig automatisch bei der Anmeldung)"
+    echo "DS5Tee installed, bridge running (log: journalctl -u ds5bridge -f)"
+    echo "Start the tray tool: DS5Tee (starts automatically at login from now on)"
 else
-    echo "ds5bridge läuft NICHT:"; journalctl -u ds5bridge -n 10 --no-pager; exit 1
+    echo "ds5bridge is NOT running:"; journalctl -u ds5bridge -n 10 --no-pager; exit 1
 fi
