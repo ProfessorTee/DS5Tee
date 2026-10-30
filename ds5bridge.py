@@ -31,6 +31,7 @@ GYRO_NOISE = 1.5  # deg/s subtracted from the turn rate: hand tremor and sensor 
 GAME_DEADZONE = 0.15  # usual game stick deadzone; gyro-only motion starts just past it so fine aim isn't swallowed
 SPEAKER_PREGAIN = 7  # speaker pre-amp gain 1-7 (DS5Dongle default 2); PS5 games sound louder than 2
 EPIPE, ECONNRESET = -32, -104
+WATCHDOG_S = 5  # main loop silent this long: it is stuck in the kernel, cut the virtual USB pads loose
 CONFIG_PATH = os.environ.get("DS5BRIDGE_CONFIG", "/etc/ds5bridge.json")  # written by DS5Tee
 STATUS_PATH = "/run/ds5bridge/status.json"  # read by DS5Tee
 DEFAULTS = {"speaker": 50, "haptics": 100, "rumble": 100, "trigger_strength_l": 100, "trigger_strength_r": 100,
@@ -604,6 +605,38 @@ class Bridge:
         os.write(self.real, bytes(r))
 
 
+def watchdog():
+    """Fork a watchdog; returns the pipe the main loop beats on. A hidraw write or ioctl can sleep
+    uninterruptibly on the kernel's global hidraw lock while a game holds it in open() of our virtual pad
+    and waits for USB replies only this loop sends: everything touching the pad freezes for good. Detaching
+    the vhci ports fails those waits, the game's open returns, the lock frees, and the main loop drops the
+    pads and re-creates them on its next scan. Its own process, since the stuck main thread can't act."""
+    r, w = os.pipe()
+    if os.fork():
+        os.close(r)
+        os.set_blocking(w, False)
+        return w
+    try:
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)  # not the parent's handler and its cleanup
+        os.close(w)
+        while True:
+            if select.select([r], [], [], WATCHDOG_S)[0]:
+                if not os.read(r, 4096):  # main process gone
+                    break
+                continue
+            used = [l.split()[1] for l in read(VHCI + "/status").splitlines()[1:] if l.split()[2] != "004"]
+            if used:
+                print(f"watchdog: main loop stuck for {WATCHDOG_S} s, detaching vhci ports {used}", flush=True)
+            for port in used:
+                try:
+                    with open(VHCI + "/detach", "w") as f:
+                        f.write(str(int(port)))
+                except OSError:
+                    pass
+    finally:
+        os._exit(0)
+
+
 def write_status(bridges):
     pads = [{"mac": b.mac, "battery": b.battery[0], "charging": b.battery[1], "headset": b.headset}
             for b in bridges.values()]
@@ -619,7 +652,12 @@ def main():
     next_scan = next_cfg = 0
     load_config()
     last_preview = config.get("preview", {}).get("n")  # don't replay an old preview at start
+    beat = watchdog()
     while True:
+        try:
+            os.write(beat, b".")
+        except BlockingIOError:
+            pass
         now = time.monotonic()
         if now >= next_cfg:
             next_cfg = now + 0.3
@@ -657,7 +695,10 @@ def main():
             for b in bridges.values():
                 if b.cfg["idle_minutes"] and now - b.active_at > b.cfg["idle_minutes"] * 60:
                     print(f"{b.mac} idle for {b.cfg['idle_minutes']} min, disconnecting", flush=True)
-                    subprocess.run(["bluetoothctl", "disconnect", b.mac], capture_output=True)
+                    try:
+                        subprocess.run(["bluetoothctl", "disconnect", b.mac], capture_output=True, timeout=3)
+                    except subprocess.TimeoutExpired:  # bluetoothd busy: try again next idle check
+                        pass
                     b.active_at = now
         fds, timeout = {}, 2.0
         for b in bridges.values():
