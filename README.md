@@ -26,7 +26,8 @@ Linux, PipeWire and Proton see a real USB device:
 | USB audio (4 channels, 48 kHz) | channels 3/4 → haptics (3 kHz, int8), channels 1/2 → speaker (Opus), Bluetooth report `0x39` |
 | Feature reports | read: passed through · write: only `0x80` and `0x60–0x62` (others drop the connection) |
 
-The real Bluetooth controller is hidden from games and Steam so it doesn't show up twice.
+The real Bluetooth controller is hidden from games and Steam so it doesn't show up twice: a udev rule
+(`72-ds5bridge-hide.rules`) makes its nodes root-only the moment they appear, before anything can open them.
 Other Bluetooth devices (keyboard, mouse, other gamepads) are left alone.
 
 ## DS5Tee – the tray tool

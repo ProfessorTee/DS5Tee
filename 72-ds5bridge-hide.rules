@@ -1,0 +1,5 @@
+# ds5bridge: the real Bluetooth DualSense nodes are root-only from the moment they appear. Hiding them
+# afterwards is too late when Steam or a running game opens them first: they keep that handle, see a
+# second pad and fight the bridge over lightbar and player LEDs. Runs before 73-seat-late (uaccess ACLs).
+SUBSYSTEM=="hidraw", KERNELS=="0005:054C:0CE6.*", MODE="0600", TAG-="uaccess"
+SUBSYSTEM=="input", KERNELS=="0005:054C:0CE6.*", MODE="0600", TAG-="uaccess"

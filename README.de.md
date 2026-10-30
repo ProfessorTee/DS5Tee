@@ -27,7 +27,8 @@ USB-DualSense** vor – über USB/IP (`vhci_hcd`), mit den USB-Deskriptoren des 
 | USB-Audio (4 Kanäle, 48 kHz) | Kanal 3/4 → Haptik (3 kHz, int8), Kanal 1/2 → Lautsprecher (Opus), Bluetooth-Report `0x39` |
 | Feature-Reports | lesen: durchgereicht · schreiben: nur `0x80` und `0x60–0x62` (andere trennen sonst die Verbindung) |
 
-Der echte Bluetooth-Controller wird vor Spielen und Steam versteckt, damit er nicht doppelt auftaucht.
+Der echte Bluetooth-Controller wird vor Spielen und Steam versteckt, damit er nicht doppelt auftaucht: Eine udev-Regel
+(`72-ds5bridge-hide.rules`) macht seine Geräte root-only, sobald sie auftauchen – bevor irgendetwas sie öffnen kann.
 Andere Bluetooth-Geräte (Tastatur, Maus, andere Gamepads) bleiben unberührt.
 
 ## DS5Tee – das Tray-Tool

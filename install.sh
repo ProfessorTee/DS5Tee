@@ -7,8 +7,10 @@ cd "$(dirname "$0")"
 if [ "$1" = undo ]; then
     systemctl disable --now ds5bridge.service || true
     rm -rf /usr/local/lib/ds5bridge /etc/systemd/system/ds5bridge.service /usr/local/bin/DS5Tee \
-        /usr/share/applications/DS5Tee.desktop /etc/xdg/autostart/DS5Tee.desktop
+        /usr/share/applications/DS5Tee.desktop /etc/xdg/autostart/DS5Tee.desktop \
+        /etc/udev/rules.d/72-ds5bridge-hide.rules
     systemctl daemon-reload
+    udevadm control --reload
     udevadm trigger --subsystem-match=hidraw --subsystem-match=input  # restore permissions of hidden nodes
     echo "DS5Tee removed."
     exit
@@ -19,6 +21,8 @@ home=$(getent passwd "$user" | cut -d: -f6)
 install -Dm644 ds5bridge.py usb_report_desc.bin -t /usr/local/lib/ds5bridge/
 sed "s|@CONFIG@|$home/.config/ds5bridge.json|" ds5bridge.service > /etc/systemd/system/ds5bridge.service
 install -Dm755 DS5Tee /usr/local/bin/DS5Tee
+install -Dm644 72-ds5bridge-hide.rules -t /etc/udev/rules.d/
+udevadm control --reload
 install -Dm644 DS5Tee.desktop /usr/share/applications/DS5Tee.desktop
 install -Dm644 DS5Tee.desktop /etc/xdg/autostart/DS5Tee.desktop
 systemctl daemon-reload
