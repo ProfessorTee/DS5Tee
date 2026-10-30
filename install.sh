@@ -17,9 +17,8 @@ if [ "$1" = undo ]; then
 fi
 user=${SUDO_USER:-${PKEXEC_UID:+$(id -nu "$PKEXEC_UID")}}  # sudo or pkexec
 user=${user:-$(logname 2>/dev/null || echo root)}
-home=$(getent passwd "$user" | cut -d: -f6)
 install -Dm644 ds5bridge.py usb_report_desc.bin -t /usr/local/lib/ds5bridge/
-sed "s|@CONFIG@|$home/.config/ds5bridge.json|" ds5bridge.service > /etc/systemd/system/ds5bridge.service
+install -Dm644 ds5bridge.service -t /etc/systemd/system/
 install -Dm755 DS5Tee /usr/local/bin/DS5Tee
 rm -f /etc/udev/rules.d/72-ds5bridge-hide.rules  # older version; the bridge now keeps it in /run
 install -Dm644 DS5Tee.desktop /usr/share/applications/DS5Tee.desktop

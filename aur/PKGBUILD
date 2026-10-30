@@ -1,0 +1,23 @@
+# Maintainer: ProfessorTee <tee.winkler@live.de>
+pkgname=ds5tee
+pkgver=1.0
+pkgrel=1
+pkgdesc="DualSense over Bluetooth like wired: adaptive triggers, haptics and speaker via a virtual USB pad"
+arch=('any')
+url="https://github.com/ProfessorTee/DS5Tee"
+license=('MIT')
+depends=('python' 'python-numpy' 'pyside6' 'opus' 'bluez-utils' 'pipewire' 'systemd')
+install=ds5tee.install
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+    cd DS5Tee-$pkgver
+    install -Dm644 ds5bridge.py usb_report_desc.bin -t "$pkgdir/usr/lib/ds5bridge/"
+    sed 's|/usr/local/lib/|/usr/lib/|' ds5bridge.service | install -Dm644 /dev/stdin "$pkgdir/usr/lib/systemd/system/ds5bridge.service"
+    install -Dm755 DS5Tee "$pkgdir/usr/bin/DS5Tee"
+    sed 's|/usr/local/bin/|/usr/bin/|' DS5Tee.desktop > DS5Tee.desktop.pkg
+    install -Dm644 DS5Tee.desktop.pkg "$pkgdir/usr/share/applications/DS5Tee.desktop"
+    install -Dm644 DS5Tee.desktop.pkg "$pkgdir/etc/xdg/autostart/DS5Tee.desktop"
+    install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname/"
+}

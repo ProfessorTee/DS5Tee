@@ -16,7 +16,7 @@ then see a real USB device with one container, exactly like a cable.
 Runs as root: needs vhci_hcd and hides the real Bluetooth nodes from users, so games and
 Steam only see the USB pad. Other Bluetooth devices are untouched.
 """
-import ctypes, fcntl, glob, json, heapq, math, os, select, signal, socket, struct, subprocess, sys, time, zlib
+import ctypes, fcntl, glob, json, heapq, math, os, pwd, select, signal, socket, struct, subprocess, sys, time, zlib
 import numpy as np
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -32,7 +32,9 @@ GAME_DEADZONE = 0.15  # usual game stick deadzone; gyro-only motion starts just 
 SPEAKER_PREGAIN = 7  # speaker pre-amp gain 1-7 (DS5Dongle default 2); PS5 games sound louder than 2
 EPIPE, ECONNRESET = -32, -104
 WATCHDOG_S = 5  # main loop silent this long: it is stuck in the kernel, cut the virtual USB pads loose
-CONFIG_PATH = os.environ.get("DS5BRIDGE_CONFIG", "/etc/ds5bridge.json")  # written by DS5Tee
+# DS5Tee writes ~/.config/ds5bridge.json of whoever runs it; the newest one wins (DS5BRIDGE_CONFIG overrides)
+CONFIG_PATHS = [os.environ["DS5BRIDGE_CONFIG"]] if os.environ.get("DS5BRIDGE_CONFIG") else \
+    [p.pw_dir + "/.config/ds5bridge.json" for p in pwd.getpwall() if p.pw_uid == 0 or 1000 <= p.pw_uid < 60000]
 STATUS_PATH = "/run/ds5bridge/status.json"  # read by DS5Tee
 DEFAULTS = {"speaker": 50, "haptics": 100, "rumble": 100, "trigger_strength_l": 100, "trigger_strength_r": 100,
             "trigger_mode_l": "game", "trigger_mode_r": "game", "color": "", "player": 0, "idle_minutes": 15,
@@ -59,8 +61,13 @@ SUBSYSTEM=="input", KERNELS=="0005:054C:0CE6.*", MODE="0600", TAG-="uaccess"
 def load_config():
     """Re-read the tray tool's settings; returns True when they changed."""
     global config
+    def mtime(p):
+        try:
+            return os.stat(p).st_mtime
+        except OSError:
+            return 0
     try:
-        with open(CONFIG_PATH) as f:
+        with open(max(CONFIG_PATHS, key=mtime)) as f:
             new = json.load(f)
     except (OSError, ValueError):
         new = {}

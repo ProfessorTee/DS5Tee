@@ -1,0 +1,13 @@
+post_install() {
+    echo "DS5Tee: start the bridge once with  sudo systemctl enable --now ds5bridge"
+    echo "        then open DS5Tee from the menu (it autostarts at login)."
+}
+
+post_upgrade() {
+    systemctl daemon-reload
+    systemctl try-restart ds5bridge.service
+}
+
+pre_remove() {
+    systemctl disable --now ds5bridge.service 2>/dev/null || true
+}
