@@ -3,7 +3,7 @@ Description=DualSense Bluetooth -> virtual USB DualSense bridge
 After=bluetooth.service
 
 [Service]
-ExecStart=/usr/bin/python3 /usr/local/lib/ds5bridge/ds5bridge.py
+ExecStart=/usr/local/bin/ds5bridge
 Restart=on-failure
 RestartSec=2
 Nice=-5

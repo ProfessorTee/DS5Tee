@@ -1,21 +1,32 @@
 # Maintainer: ProfessorTee <tee.winkler@live.de>
 pkgname=ds5tee
-pkgver=1.0
+pkgver=2.0
 pkgrel=1
 pkgdesc="DualSense over Bluetooth like wired: adaptive triggers, haptics and speaker via a virtual USB pad"
-arch=('any')
+arch=('x86_64' 'aarch64')
 url="https://github.com/ProfessorTee/DS5Tee"
 license=('MIT')
-depends=('python' 'python-numpy' 'pyside6' 'opus' 'bluez-utils' 'pipewire' 'systemd')
+depends=('opus' 'bluez-utils' 'systemd' 'libxkbcommon' 'wayland')
+makedepends=('cargo')
+optdepends=('pipewire: haptics and speaker audio')
 install=ds5tee.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 
+prepare() {
+    cd DS5Tee-$pkgver
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd DS5Tee-$pkgver
+    CARGO_TARGET_DIR=target cargo build --frozen --release
+}
+
 package() {
     cd DS5Tee-$pkgver
-    install -Dm644 ds5bridge.py usb_report_desc.bin -t "$pkgdir/usr/lib/ds5bridge/"
-    sed 's|/usr/local/lib/|/usr/lib/|' ds5bridge.service | install -Dm644 /dev/stdin "$pkgdir/usr/lib/systemd/system/ds5bridge.service"
-    install -Dm755 DS5Tee "$pkgdir/usr/bin/DS5Tee"
+    install -Dm755 target/release/ds5bridge target/release/DS5Tee -t "$pkgdir/usr/bin/"
+    sed 's|/usr/local/bin/|/usr/bin/|' ds5bridge.service | install -Dm644 /dev/stdin "$pkgdir/usr/lib/systemd/system/ds5bridge.service"
     sed 's|/usr/local/bin/|/usr/bin/|' DS5Tee.desktop > DS5Tee.desktop.pkg
     install -Dm644 DS5Tee.desktop.pkg "$pkgdir/usr/share/applications/DS5Tee.desktop"
     install -Dm644 DS5Tee.desktop.pkg "$pkgdir/etc/xdg/autostart/DS5Tee.desktop"

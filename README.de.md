@@ -16,7 +16,7 @@ Spiele schalten die DualSense-Extras nur für einen *kabelgebundenen* Controller
 Audiogerät (Lautsprecher + Haptik) über das gemeinsame USB-Gerät. Ein virtueller HID-Controller allein
 reicht deshalb nicht.
 
-`ds5bridge.py` spielt für jeden per Bluetooth verbundenen DualSense dem Kernel einen **kompletten
+`ds5bridge` spielt für jeden per Bluetooth verbundenen DualSense dem Kernel einen **kompletten
 USB-DualSense** vor – über USB/IP (`vhci_hcd`), mit den USB-Deskriptoren des DS5Dongle
 (HID + USB-Audio mit 4 Kanälen). Linux, PipeWire und Proton sehen damit ein echtes USB-Gerät:
 
@@ -46,19 +46,23 @@ Einstellungen **pro Controller** (oder als Standard für neue Controller):
 - *Kabel-Emulation* an/aus: aus macht den Controller wieder zu einem normalen Bluetooth-Controller (Spiel danach neu starten)
 - Hält Haptik und Lautsprecher des Controllers auf dem Controller, wenn der [Arctis Sound Manager](https://github.com/loteran/Arctis-Sound-Manager) sonst allen Spielton aufs Headset legt
 
+Klein und sparsam: beides sind Rust-Programme (Bridge ~0,6 MB, etwa 3 MB RAM; Tray etwa 4 MB RAM). Das
+Einstellungsfenster ist ein eigener Prozess, wird auf der CPU gezeichnet (kein Grafiktreiber geladen, etwa 11 MB
+RAM) und läuft nur, solange es offen ist. `DS5Tee` erneut starten, während das Tray läuft, öffnet die Einstellungen.
+
 Die Oberfläche folgt der Systemsprache: Deutsch auf deutschen Systemen, sonst Englisch.
 
 ## Voraussetzungen
 
 - Linux mit `vhci_hcd` (Teil des Standard-Kernels, USB/IP) und BlueZ
-- Python 3 mit `numpy`, dazu `libopus` und für das Tray-Tool `PySide6`
+- `libopus`; zum Bauen: Rust (`cargo`)
 - Für Haptik und Lautsprecher in Spielen: ein Proton mit DualSense-Audio-Unterstützung, z. B. GE-Proton 11
 - Im Spiel bzw. in Steam: **Steam Input für das Spiel ausschalten**, damit es den Controller direkt anspricht
 
 Arch / CachyOS:
 
 ```sh
-sudo pacman -S python-numpy opus pyside6 bluez-utils
+sudo pacman -S rust opus bluez-utils
 ```
 
 ## Installation
@@ -69,7 +73,8 @@ cd DS5Tee
 sudo ./install.sh
 ```
 
-Das installiert den Systemdienst `ds5bridge` und das Tray-Tool `DS5Tee` (startet bei der Anmeldung).
+Das baut beide Programme (als dein Benutzer) und installiert den Systemdienst `ds5bridge` und das Tray-Tool
+`DS5Tee` (startet bei der Anmeldung).
 Danach den DualSense ganz normal per Bluetooth verbinden – auch während ein Spiel schon läuft
 (getestet mit Monster Hunter Wilds: Haptik kommt nach dem Verbinden im laufenden Spiel an).
 

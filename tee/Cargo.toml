@@ -1,0 +1,16 @@
+[package]
+name = "ds5tee"
+version = "2.0.0"
+edition = "2024"
+
+[[bin]]
+name = "DS5Tee"
+path = "src/main.rs"
+
+[dependencies]
+egui = { version = "0.34", default-features = false, features = ["default_fonts"] }
+egui_software_backend = "0.0.3"
+ksni = { version = "0.3.7", default-features = false, features = ["blocking", "async-io"] }
+libc = "0.2.191"
+serde_json = "1.0.154"
+zbus = { version = "5.19.0", default-features = false, features = ["async-io", "blocking-api"] }
