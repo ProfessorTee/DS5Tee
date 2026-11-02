@@ -32,6 +32,8 @@ Other Bluetooth devices (keyboard, mouse, other gamepads) are left alone.
 
 ## DS5Tee – the tray tool
 
+<p align="center"><img src="screenshots/settings-en.png" alt="DS5Tee settings window"></p>
+
 Settings **per controller** (or as the default for new controllers):
 
 - Speaker, haptics, rumble – with a short test sound / test rumble when you release the slider

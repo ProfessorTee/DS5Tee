@@ -33,6 +33,8 @@ Andere Bluetooth-Geräte (Tastatur, Maus, andere Gamepads) bleiben unberührt.
 
 ## DS5Tee – das Tray-Tool
 
+<p align="center"><img src="screenshots/settings-de.png" alt="DS5Tee-Einstellungsfenster"></p>
+
 Einstellungen **pro Controller** (oder als Standard für neue Controller):
 
 - Lautsprecher, Haptik, Vibration – mit kurzem Probeton bzw. Probevibration beim Loslassen des Reglers
