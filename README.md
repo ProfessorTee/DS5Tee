@@ -40,9 +40,11 @@ Settings **per controller** (or as the default for new controllers):
 - Triggers L / R: strength and mode (*from game*, *off*, *resistance*, *weapon*, *vibration*)
 - Gyro to right stick (off / while aiming with L2 / always) with sensitivity, horizontal/vertical invert –
   like on the Switch: coarse with the stick, fine by tilting; works in every game without Steam Input
-- Light bar: custom color, by battery level (green → yellow → red) or from the game; controller ID (player LEDs 1–4)
-- Auto-disconnect when idle, disconnect controller, reset
+- Light bar: custom color, by battery level (up to 5 points with your own colors, blended or in steps) or from the game, adjustable brightness; controller ID (player LEDs 1–4)
+- Controller microphone over Bluetooth (switch, off by default)
+- Auto-disconnect when idle, disconnect controller (also by middle-clicking the tray icon), reset
 - Touchpad as desktop mouse on/off (KDE Plasma)
+- Live view of buttons, sticks, triggers and touchpad (two fingers)
 - Battery level in the tooltip
 - *Wired emulation* on/off: off turns the pad back into a plain Bluetooth pad (restart the game after switching)
 - Keeps the pad's haptics/speaker stream on the controller when [Arctis Sound Manager](https://github.com/loteran/Arctis-Sound-Manager) would route all game audio to the headset
@@ -85,7 +87,7 @@ Then connect the DualSense over Bluetooth as usual – even while a game is alre
 
 ## Known limitations
 
-- The controller microphone is not forwarded yet (the virtual controller delivers silence).
+- The controller microphone is experimental and off by default (switch in the settings window).
 - The per-side trigger strength scales the effect parameters of the common modes; rare effects
   (bow, galloping, machine) are left unchanged.
 - Tested on CachyOS with KDE Plasma; the touchpad switch uses KWin.

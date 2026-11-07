@@ -12,13 +12,14 @@
 //!   feature GET               -> forwarded to the controller
 //!   feature SET               -> only 0x80 / 0x60-0x62 forwarded (CRC recomputed), like DS5Dongle
 //!   iso OUT 4ch s16 48 kHz    -> BT 0x39: ch3/4 haptics at 3 kHz int8, ch1/2 speaker as Opus
+//!   BT 0x31 with bit 1 of [1] -> iso IN 2ch s16 48 kHz: 71 B mono Opus mic frame at [3], only while the mic is open
 //! Runs as root: needs vhci_hcd and hides the real Bluetooth nodes from users, so games and
 //! Steam only see the USB pad. Other Bluetooth devices are untouched.
 #[path = "../../shared.rs"]
 mod shared;
 
 use serde_json::{Map, Value, json};
-use shared::{STATUS_PATH, settings_for};
+use shared::{STATUS_PATH, battery_color, battery_points, parse_color, settings_for};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, VecDeque};
 use std::f64::consts::PI;
@@ -42,6 +43,11 @@ const GYRO_LSB: f64 = 16.4; // raw gyro units per deg/s (+-2000 deg/s range)
 const GYRO_NOISE: f64 = 1.5; // deg/s subtracted from the turn rate: hand tremor and sensor noise
 const GAME_DEADZONE: f64 = 0.15; // usual game stick deadzone; gyro-only motion starts just past it so fine aim isn't swallowed
 const SPEAKER_PREGAIN: u8 = 7; // speaker pre-amp gain 1-7 (DS5Dongle default 2); PS5 games sound louder than 2
+const MIC_OPUS_SIZE: usize = 71; // bytes of one 10 ms mono Opus mic frame from the pad
+const MIC_FRAME: usize = 480; // samples per mic frame
+const MIC_START: usize = 3 * MIC_FRAME; // buffered before playout starts: absorbs BT jitter
+const MIC_MAX: usize = 8 * MIC_FRAME; // older samples are dropped: bounds latency if the pad's clock runs fast
+const MIC_PACKET: usize = 48 * 4; // 1 ms of 48 kHz 2 ch s16, the wMaxPacketSize of 196 would run the stream at 49 kHz
 const EPIPE: i32 = -32;
 const ECONNRESET: i32 = -104;
 const WATCHDOG_S: i32 = 5; // main loop silent this long: it is stuck in the kernel, cut the virtual USB pads loose
@@ -173,14 +179,6 @@ fn scale_effect(e: &mut [u8], pct: f64) {
     }
 }
 
-/// Lightbar by battery: green at 100 %, yellow at 50 %, red at 0 %.
-fn battery_color(pct: Option<u8>) -> [u8; 3] {
-    let p = pct.unwrap_or(50) as f64;
-    let r = if p <= 50.0 { 255.0 } else { (255.0 * (100.0 - p) / 50.0).round_ties_even() };
-    let g = if p >= 50.0 { 255.0 } else { (255.0 * p / 50.0).round_ties_even() };
-    [r as u8, g as u8, 0]
-}
-
 fn trigger_effect(mode: &str) -> &'static [u8] {
     // raw DualSense trigger effects (mode, params...), forced per trigger
     match mode {
@@ -191,11 +189,6 @@ fn trigger_effect(mode: &str) -> &'static [u8] {
     }
 }
 
-fn parse_color(c: &str) -> Option<[u8; 3]> {
-    let h = c.strip_prefix('#')?;
-    let v = u32::from_str_radix(h, 16).ok().filter(|_| h.len() == 6)?;
-    Some([(v >> 16) as u8, (v >> 8) as u8, v as u8])
-}
 
 /// User overrides on an outgoing SetStateData (common part, 47 bytes, report id stripped).
 fn apply_settings(body: &mut [u8], cfg: &Cfg, battery: Option<u8>) {
@@ -221,10 +214,20 @@ fn apply_settings(body: &mut [u8], cfg: &Cfg, battery: Option<u8>) {
         }
     }
     let color = text(cfg, "color");
-    let rgb = if color == "battery" { Some(battery_color(battery)) } else { parse_color(color) };
+    let rgb = if color == "battery" {
+        let smooth = cfg.get("battery_smooth").and_then(Value::as_bool).unwrap_or(true);
+        Some(battery_color(battery.unwrap_or(50) as f64, &battery_points(cfg), smooth))
+    } else {
+        parse_color(color)
+    };
     if let Some(rgb) = rgb {
         body[1] |= 0x04;
         body[44..47].copy_from_slice(&rgb);
+    }
+    // the LED's power follows its value, so a plain scale saves battery in step with the slider (also on the game's colour)
+    if body[1] & 0x04 != 0 {
+        let brightness = num(cfg, "brightness");
+        body[44..47].iter_mut().for_each(|c| *c = (*c as f64 * brightness / 100.0).round_ties_even() as u8);
     }
     let player = num(cfg, "player") as i64;
     if let Some(&(_, leds)) = PLAYER_LEDS.iter().find(|(p, _)| *p == player) {
@@ -349,6 +352,36 @@ fn bt_dualsenses() -> BTreeMap<String, (String, String)> {
     found
 }
 
+fn pad_driver(hiddir: &str) -> String {
+    fs::read_link(format!("{hiddir}/driver")).ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default()
+}
+
+/// Rebind the real pad. Mic frames are 78 B reports with a valid CRC, the same as input reports for hid-playstation:
+/// it turns them into wild touchpad clicks and mute toggles. hid-generic ignores report 0x31, hidraw works the same.
+/// The real pad is hidden anyway while the bridge runs, so it stays on hid-generic even with the mic off.
+fn set_pad_driver(hiddir: &str, generic: bool) -> bool {
+    const SPECIAL: &str = "/sys/module/hid/parameters/ignore_special_drivers"; // hid-generic refuses this pad without it
+    let id = hiddir.rsplit('/').next().unwrap_or("");
+    let current = pad_driver(hiddir);
+    let want = if generic { "hid-generic" } else { "playstation" };
+    if current == want {
+        return true;
+    }
+    if !current.is_empty() {
+        let _ = fs::write(format!("/sys/bus/hid/drivers/{current}/unbind"), id);
+    }
+    if generic {
+        let _ = fs::write(SPECIAL, "1");
+    }
+    let bound = fs::write(format!("/sys/bus/hid/drivers/{want}/bind"), id);
+    if generic {
+        let _ = fs::write(SPECIAL, "0");
+    }
+    println!("pad {id}: {current} -> {want}: {bound:?}");
+    bound.is_ok()
+}
+
 /// Make the real Bluetooth nodes root-only so games/Steam don't see a second pad.
 fn hide(hiddir: &str, hidraw: &str) {
     let mut nodes = vec![hidraw.to_string()];
@@ -370,6 +403,9 @@ unsafe extern "C" {
     fn opus_encoder_ctl(st: *mut libc::c_void, request: i32, ...) -> i32;
     fn opus_encode(st: *mut libc::c_void, pcm: *const i16, frame_size: i32, data: *mut u8, max: i32) -> i32;
     fn opus_encoder_destroy(st: *mut libc::c_void);
+    fn opus_decoder_create(fs: i32, channels: i32, error: *mut i32) -> *mut libc::c_void;
+    fn opus_decode(st: *mut libc::c_void, data: *const u8, len: i32, pcm: *mut i16, frame_size: i32, fec: i32) -> i32;
+    fn opus_decoder_destroy(st: *mut libc::c_void);
 }
 
 /// 10 ms CBR Opus frames of 200 bytes, as the DualSense expects (DS5Dongle settings).
@@ -399,6 +435,70 @@ impl Opus {
 impl Drop for Opus {
     fn drop(&mut self) {
         unsafe { opus_encoder_destroy(self.0) }
+    }
+}
+
+/// BT 0x32 audio control: bit 0 of byte 4 makes the pad stream its mic.
+fn mic_report(seq: u8, on: bool) -> [u8; 142] {
+    let mut r = [0u8; 142];
+    (r[0], r[1], r[2], r[3], r[4]) = (0x32, seq << 4, 0x91, 1, 0b10 | on as u8);
+    let crc = bt_crc(0xA2, &r[..138]);
+    r[138..].copy_from_slice(&crc);
+    r
+}
+
+/// An open mic: Opus frames from the pad -> jitter buffer -> iso IN packets.
+struct Mic {
+    dec: *mut libc::c_void,
+    pcm: VecDeque<i16>,
+    playing: bool,
+    frames: u32,
+    underruns: u32,
+}
+
+impl Mic {
+    fn new() -> io::Result<Self> {
+        let mut err = 0;
+        let dec = unsafe { opus_decoder_create(48000, 1, &mut err) };
+        if dec.is_null() {
+            return Err(io::Error::other(format!("opus_decoder_create {err}")));
+        }
+        Ok(Mic { dec, pcm: VecDeque::new(), playing: false, frames: 0, underruns: 0 })
+    }
+
+    fn push(&mut self, packet: &[u8]) {
+        let mut out = [0i16; MIC_FRAME];
+        let n = unsafe {
+            opus_decode(self.dec, packet.as_ptr(), packet.len() as i32, out.as_mut_ptr(), MIC_FRAME as i32, 0)
+        };
+        if n <= 0 {
+            println!("mic: opus_decode {n}");
+            return;
+        }
+        self.frames += 1;
+        self.pcm.extend(&out[..n as usize]);
+        let extra = self.pcm.len().saturating_sub(MIC_MAX);
+        self.pcm.drain(..extra);
+    }
+
+    /// One iso IN packet of `len` bytes: mono on both channels, silence until the buffer has filled (again).
+    fn fill(&mut self, out: &mut Vec<u8>, len: usize) {
+        self.playing |= self.pcm.len() >= MIC_START;
+        for _ in 0..len / 4 {
+            let sample = if self.playing { self.pcm.pop_front() } else { Some(0) };
+            if sample.is_none() {
+                self.playing = false;
+                self.underruns += 1;
+            }
+            let bytes = sample.unwrap_or(0).to_le_bytes();
+            out.extend([bytes[0], bytes[1], bytes[0], bytes[1]]);
+        }
+    }
+}
+
+impl Drop for Mic {
+    fn drop(&mut self) {
+        unsafe { opus_decoder_destroy(self.dec) }
     }
 }
 
@@ -484,6 +584,7 @@ impl Usb {
 enum Step {
     Output(Vec<u8>),
     Audio(Vec<i16>, Vec<i16>), // two 512 x 4 blocks
+    Route,
 }
 
 struct Bridge {
@@ -503,25 +604,36 @@ struct Bridge {
     pcm_buf: Vec<u8>,
     frames: Vec<Vec<i16>>,
     opus: Opus,
+    mic: Option<Mic>, // Some while the host has the mic interface open
+    bt_mic: bool,     // config "bt_mic": off = the pad's mic stays off, the virtual mic silent
+    mic_open: bool,   // the host has the mic interface open
+    generic: bool,    // the real pad runs on hid-generic: mic frames would be read as input otherwise
     usb: Usb,
 }
 
 impl Bridge {
-    fn new(hidraw: &str, mac: &str, config: &Value) -> io::Result<Self> {
+    fn new(hidraw: &str, mac: &str, config: &Value, generic: bool) -> io::Result<Self> {
         let real = OpenOptions::new().read(true).write(true).custom_flags(libc::O_NONBLOCK).open(hidraw)?;
         let opus = Opus::new()?;
         let usb = Usb::new()?;
         let mut b = Bridge {
             mac: mac.into(), real, seq: 0, packets: 0, headset: false, battery: (None, false),
             cfg: settings_for(config, mac), timers: vec![], controls: None, active_at: now(), gbias: [0.0; 2],
-            nout: 0, tout: now(), pcm_buf: vec![], frames: vec![], opus, usb,
+            nout: 0, tout: now(), pcm_buf: vec![], frames: vec![], opus, mic: None, usb,
+            bt_mic: config["bt_mic"].as_bool().unwrap_or(false), mic_open: false, generic,
         };
         println!("bridge {mac} {hidraw} -> vhci port {}", b.usb.port);
         b.audio_route()?;
+        // a freshly connected pad runs its start-up light animation and can miss the first state, so repeat it
+        let t = now();
+        b.timers = vec![(t + 2.0, Step::Route), (t + 5.0, Step::Route)];
         Ok(b)
     }
 
     fn close(&self) {
+        if self.mic.is_some() {
+            let _ = (&self.real).write_all(&mic_report(self.seq, false)); // sticky on the pad, it would keep streaming
+        }
         self.usb.close();
         println!("closed {}", self.mac);
     }
@@ -536,8 +648,15 @@ impl Bridge {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                 Err(e) => return Err(e),
             };
-            if n < 65 || r[0] != 0x31 || r[1] & 0x02 != 0 {
-                continue; // bit1 = mic audio frame
+            if n >= 2 && r[0] == 0x31 && r[1] & 0x02 != 0 {
+                // mic audio frame, not an input report
+                if let (Some(mic), true) = (&mut self.mic, n >= 3 + MIC_OPUS_SIZE) {
+                    mic.push(&r[3..3 + MIC_OPUS_SIZE]);
+                }
+                continue;
+            }
+            if n < 65 || r[0] != 0x31 {
+                continue;
             }
             if (r[55] & 1 != 0) != self.headset {
                 self.headset = !self.headset;
@@ -707,22 +826,30 @@ impl Bridge {
             self.usb.reply(seq, 0, &[], Some(data.len()))
         } else if !iso.is_empty() {
             // audio: complete in real time, the host paces its stream by our completions
-            let total: usize = iso.iter().map(|(_, l)| l).sum();
+            let actual: Vec<usize> = iso.iter().map(|&(_, l)| if direction == 0 { l } else { l.min(MIC_PACKET) }).collect();
+            let total = actual.iter().sum();
             let payload = if direction == 0 {
                 let pcm: Vec<u8> = iso.iter().flat_map(|&(o, l)| data.get(o..o + l).unwrap_or(&[]).iter().copied())
                     .collect();
                 self.pcm(&pcm)?;
                 vec![]
             } else {
-                vec![0; total] // mic: silence
+                let mut out = Vec::with_capacity(total);
+                for &len in &actual {
+                    match &mut self.mic {
+                        Some(mic) => mic.fill(&mut out, len),
+                        None => out.resize(out.len() + len, 0),
+                    }
+                }
+                out
             };
             let key = if direction == 0 { 0 } else { 1 };
             let due = now().max(self.usb.iso_due[key]) + npackets as f64 / 1000.0;
             self.usb.iso_due[key] = due;
             let mut msg = ret_submit(seq, 0, total, start, npackets);
             msg.extend(payload);
-            for (o, l) in iso {
-                for v in [o as u32, l as u32, l as u32, 0] {
+            for (&(o, l), &a) in iso.iter().zip(&actual) {
+                for v in [o as u32, l as u32, a as u32, 0] {
                     msg.extend(v.to_be_bytes());
                 }
             }
@@ -739,6 +866,10 @@ impl Bridge {
         let index = u16::from_le_bytes([setup[4], setup[5]]);
         let wlen = u16::from_le_bytes([setup[6], setup[7]]) as usize;
         let (hi, lo) = ((value >> 8) as u8, value as u8);
+        if (rtype, req) == (0x01, 11) && index & 0xFF == 2 {
+            self.mic_open = value != 0; // SET_INTERFACE on the mic stream: the pad only streams while something records
+            self.sync_mic()?;
+        }
         // bytes to return (IN) or empty to ack; None stalls
         let out: Option<Vec<u8>> = match (rtype, req) {
             (0x80, 6) => match hi { // GET_DESCRIPTOR
@@ -848,6 +979,7 @@ impl Bridge {
             match self.timers.remove(0).1 {
                 Step::Output(r) => self.output(&r)?,
                 Step::Audio(a, b) => self.audio(&[a, b], true)?,
+                Step::Route => self.audio_route()?,
             }
         }
         Ok(self.timers.first().map(|(due, _)| (due - t).max(0.0)))
@@ -858,10 +990,32 @@ impl Bridge {
         let mut r = [0u8; 48];
         (r[0], r[1], r[2]) = (0x02, 0x10 | 0x20 | 0x80, 0x80); // allow headphone/speaker volume, audio control (1+2)
         (r[5], r[6]) = (0x7C, 0x64); // headphone, speaker volume (0x64 = max)
+        if self.generic {
+            r[1] |= 0x40;
+            r[7] = 0x40; // mic volume
+        }
         r[8] = if self.headset { 0x00 } else { 0x30 }; // output path: headset jack / internal speaker
         r[2] |= 0x40; // motor power level: no global trigger reduction (strength is per side now)
         r[38] = SPEAKER_PREGAIN; // audio_control2 (common offset 37)
         self.output(&r)
+    }
+
+    /// Mic stream on while the host records, the setting allows it and the kernel driver can't misread it.
+    fn sync_mic(&mut self) -> io::Result<()> {
+        let on = self.mic_open && self.bt_mic && self.generic;
+        if on == self.mic.is_some() {
+            return Ok(());
+        }
+        if let Some(m) = self.mic.take() {
+            println!("mic closed: {} frames, {} underruns", m.frames, m.underruns);
+        }
+        if on {
+            self.mic = Some(Mic::new()?);
+            println!("mic opened");
+        }
+        let r = mic_report(self.seq, on);
+        self.seq = (self.seq + 1) & 0x0F;
+        self.real.write_all(&r)
     }
 
     /// Forced mode -> "game": clear the forced effect, games without trigger support never overwrite it.
@@ -924,7 +1078,7 @@ impl Bridge {
             let enc = self.opus.encode(&sp);
             r[142 + fi * 200..142 + (fi + 1) * 200].copy_from_slice(&enc);
         }
-        (r[0], r[1], r[2], r[3], r[4]) = (0x39, self.seq << 4, 0x91, 6, 0b01111110);
+        (r[0], r[1], r[2], r[3], r[4]) = (0x39, self.seq << 4, 0x91, 6, 0b01111110 | self.mic.is_some() as u8);
         self.seq = (self.seq + 1) & 0x0F;
         self.packets = self.packets.wrapping_add(2);
         r[5..9].fill(48); // audio buffer length (DS5Dongle default)
@@ -1026,6 +1180,7 @@ fn main() {
     config.load();
     let mut last_preview = config.value["preview"]["n"].clone(); // don't replay an old preview at start
     let mut last_status = String::new();
+    let (mut driver_failed, mut next_scan_soon) = (false, false);
     let beat = watchdog(VHCI, WATCHDOG_S).expect("watchdog");
     let mut beat = File::from(beat);
     while !STOP.load(Ordering::Relaxed) {
@@ -1036,6 +1191,10 @@ fn main() {
             if config.load() {
                 let mut failed = vec![];
                 for (path, b) in bridges.iter_mut() {
+                    b.bt_mic = config.value["bt_mic"].as_bool().unwrap_or(false);
+                    if b.sync_mic().is_err() {
+                        failed.push(path.clone());
+                    }
                     let new = settings_for(&config.value, &b.mac);
                     if new != b.cfg {
                         let old = std::mem::replace(&mut b.cfg, new);
@@ -1071,9 +1230,27 @@ fn main() {
                 b.close();
                 false
             });
+            if !enabled {
+                for (hiddir, _) in bt_dualsenses().values() {
+                    set_pad_driver(hiddir, false); // back to a plain Bluetooth pad
+                }
+            }
+            let want_generic = !driver_failed; // always, so switching the mic doesn't re-create the virtual pad
             for (path, (hiddir, mac)) in &current {
+                let generic = pad_driver(hiddir) == "hid-generic";
+                if generic != want_generic {
+                    if let Some(b) = bridges.remove(path) {
+                        b.close(); // holds the hidraw node, which goes away with the driver
+                    }
+                    if !set_pad_driver(hiddir, want_generic) {
+                        driver_failed = true;
+                        set_pad_driver(hiddir, false);
+                    }
+                    next_scan_soon = true; // new hidraw number
+                    continue;
+                }
                 if !bridges.contains_key(path) {
-                    match Bridge::new(path, mac, &config.value) {
+                    match Bridge::new(path, mac, &config.value, generic) {
                         Ok(b) => {
                             bridges.insert(path.clone(), b);
                         }
@@ -1085,7 +1262,7 @@ fn main() {
                 }
                 hide(hiddir, path); // repeated: udev may restore permissions on change events
             }
-            next_scan = t + 2.0;
+            next_scan = t + if std::mem::take(&mut next_scan_soon) { 0.3 } else { 2.0 };
             write_status(&bridges, enabled, &mut last_status);
             for b in bridges.values_mut() {
                 let idle = num(&b.cfg, "idle_minutes");
@@ -1144,6 +1321,9 @@ fn main() {
     for b in bridges.values() {
         b.close();
     }
+    for (hiddir, _) in bt_dualsenses().values() {
+        set_pad_driver(hiddir, false);
+    }
     set_hiding(false); // without the bridge a hidden pad would be unusable
 }
 
@@ -1165,8 +1345,49 @@ mod tests {
         let mut w = [0x25, 0, 0, 0b111, 0, 0, 0, 0, 0, 0, 0]; // weapon strength 8 (stored 7) -> 4 (stored 3)
         scale_effect(&mut w, 50.0);
         assert_eq!(w[3], 3);
-        assert_eq!(battery_color(Some(100)), [0, 255, 0]);
-        assert_eq!(battery_color(Some(0)), [255, 0, 0]);
+        let defaults = battery_points(&shared::settings_for(&json!({}), ""));
+        assert_eq!(battery_color(100.0, &defaults, true), [0, 255, 0]);
+        assert_eq!(battery_color(5.0, &defaults, true), [255, 0, 0]);
+        assert_eq!(battery_color(50.0, &defaults, true), [255, 255, 0]);
+        let points = [(20.0, [0, 0, 200]), (60.0, [100, 0, 0])];
+        assert_eq!(battery_color(40.0, &points, true), [50, 0, 100]);
+        assert_eq!(battery_color(40.0, &points, false), [0, 0, 200]);
+        assert_eq!(battery_color(60.0, &points, false), [100, 0, 0]);
+        assert_eq!(battery_color(99.0, &points, true), [100, 0, 0]);
+        assert_eq!(battery_color(1.0, &points, true), [0, 0, 200]);
+        let mut cfg = shared::settings_for(&json!({"default": {"color": "#ff8000", "brightness": 50}}), "");
+        cfg.insert("player".into(), json!(0));
+        let mut body = [0u8; 47];
+        apply_settings(&mut body, &cfg, None);
+        assert_eq!(body[44..47], [128, 64, 0]);
+    }
+
+    /// Mic: silence until pre-filled, then the decoded samples on both channels; silence again after an underrun.
+    #[test]
+    fn mic_jitter_buffer() {
+        let mut enc = Opus::new().unwrap();
+        let packet = enc.encode(&[1000i16; 960]);
+        let mut mic = Mic::new().unwrap();
+        let mut out = vec![];
+        mic.fill(&mut out, MIC_PACKET);
+        assert_eq!(out, vec![0; MIC_PACKET]);
+        for _ in 0..3 {
+            mic.push(&packet);
+        }
+        assert_eq!(mic.pcm.len(), MIC_START);
+        out.clear();
+        mic.fill(&mut out, MIC_START * 4);
+        assert_eq!(out.len(), MIC_START * 4);
+        assert!(out.iter().any(|&b| b != 0));
+        assert!(out.chunks_exact(4).all(|c| c[..2] == c[2..]));
+        assert!(mic.pcm.is_empty() && mic.underruns == 0);
+        out.clear();
+        mic.fill(&mut out, 8);
+        assert_eq!((out, mic.underruns, mic.playing), (vec![0; 8], 1, false));
+        for _ in 0..20 {
+            mic.push(&packet);
+        }
+        assert_eq!(mic.pcm.len(), MIC_MAX);
     }
 
     /// The watchdog detaches used vhci ports only when the main loop stops beating.

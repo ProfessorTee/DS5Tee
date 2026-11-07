@@ -41,9 +41,11 @@ Einstellungen **pro Controller** (oder als Standard für neue Controller):
 - Trigger L / R: Stärke und Modus (*vom Spiel*, *aus*, *Widerstand*, *Waffe*, *Vibration*)
 - Gyro auf den rechten Stick (aus / beim Zielen mit L2 / immer) mit Empfindlichkeit, horizontal/vertikal spiegelbar – wie bei der Switch:
   grob mit dem Stick, fein durch Kippen; funktioniert ohne Steam Input in jedem Spiel
-- Lichtleiste: eigene Farbe, nach Akkustand (grün → gelb → rot) oder vom Spiel; Controller-ID (Spieler-LEDs 1–4)
-- Auto-Trennen nach Leerlauf, Controller trennen, Zurücksetzen
+- Lichtleiste: eigene Farbe, nach Akkustand (bis zu 5 Punkte mit eigenen Farben, als Verlauf oder in Stufen) oder vom Spiel, Helligkeit einstellbar; Controller-ID (Spieler-LEDs 1–4)
+- Controller-Mikrofon über Bluetooth (Schalter, standardmäßig aus)
+- Auto-Trennen nach Leerlauf, Controller trennen (auch per Mittelklick aufs Tray-Icon), Zurücksetzen
 - Touchpad als Maus am Desktop an/aus (KDE Plasma)
+- Live-Anzeige von Tasten, Sticks, Triggern und Touchpad (zwei Finger)
 - Akkustand im Tooltip
 - *Kabel-Emulation* an/aus: aus macht den Controller wieder zu einem normalen Bluetooth-Controller (Spiel danach neu starten)
 - Hält Haptik und Lautsprecher des Controllers auf dem Controller, wenn der [Arctis Sound Manager](https://github.com/loteran/Arctis-Sound-Manager) sonst allen Spielton aufs Headset legt
@@ -86,7 +88,7 @@ Danach den DualSense ganz normal per Bluetooth verbinden – auch während ein S
 
 ## Bekannte Grenzen
 
-- Das Controller-Mikrofon wird noch nicht übertragen (der virtuelle Controller liefert Stille).
+- Das Controller-Mikrofon ist experimentell und standardmäßig aus (Schalter im Einstellungsfenster).
 - Die Trigger-Stärke pro Seite skaliert die Effekt-Parameter der gängigen Modi; seltene Effekte
   (Bogen, Galopp, Maschine) bleiben unverändert.
 - Getestet unter CachyOS mit KDE Plasma; der Touchpad-Schalter nutzt KWin.
