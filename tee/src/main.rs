@@ -484,6 +484,28 @@ fn input_nodes(mac: &str) -> Vec<(File, bool)> {
     out
 }
 
+/// Earliest pending redraw. egui_software_backend 0.0.3 redraws at once on every request_repaint_after
+/// (it ignores the delay), so a 1 s refresh turned into an endless CPU render loop. Delayed redraws go here instead.
+static REDRAW_AT: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn redraw_after(delay: Duration) {
+    let at = Instant::now() + delay;
+    let mut due = REDRAW_AT.lock().unwrap();
+    if due.is_none_or(|d| at < d) {
+        *due = Some(at);
+    }
+}
+
+/// Fires the pending redraw when it is due, checking 30 times a second.
+fn redraw_ticker(ctx: egui::Context) {
+    loop {
+        std::thread::sleep(Duration::from_millis(33));
+        if REDRAW_AT.lock().unwrap().take_if(|d| *d <= Instant::now()).is_some() {
+            ctx.request_repaint();
+        }
+    }
+}
+
 /// Keeps `state` current for the pad named in `mac`; asks for a redraw at most about 30 times a second.
 fn input_reader(mac: Arc<Mutex<String>>, state: Arc<Mutex<Input>>, ctx: egui::Context) {
     loop {
@@ -514,7 +536,7 @@ fn input_reader(mac: Arc<Mutex<String>>, state: Arc<Mutex<Input>>, ctx: egui::Co
                 }
             }
             if changed {
-                ctx.request_repaint_after(Duration::from_millis(33));
+                redraw_after(Duration::ZERO);
             }
         }
     }
@@ -786,6 +808,8 @@ impl Settings {
         let mac = pads.first().map(|p| p.mac.clone()).unwrap_or_default();
         let (input, input_mac) = (Arc::new(Mutex::new(Input::new(false))), Arc::new(Mutex::new(mac.clone())));
         let (reader_mac, reader_state) = (input_mac.clone(), input.clone());
+        let ticker_ctx = ctx.clone();
+        std::thread::spawn(move || redraw_ticker(ticker_ctx));
         std::thread::spawn(move || input_reader(reader_mac, reader_state, ctx));
         Settings { input, input_mac, battery_editor: false, cfg: load_json(&CONFIG), seen: mtime(&CONFIG), mac,
                    pads, pads_at: Instant::now(), pending: vec![], save_at: None, preview: None }
@@ -1232,7 +1256,7 @@ impl App for Settings {
     fn ui(&mut self, ui: &mut egui::Ui, _backend: &mut SoftwareBackend) {
         self.poll();
         egui::CentralPanel::default().show_inside(ui, |ui| egui::ScrollArea::vertical().show(ui, |ui| self.form(ui)));
-        ui.ctx().request_repaint_after(Duration::from_millis(if self.save_at.is_some() || self.preview.is_some() { 50 } else { 1000 }));
+        redraw_after(Duration::from_millis(if self.save_at.is_some() || self.preview.is_some() { 50 } else { 1000 }));
     }
 
     fn on_exit(&mut self, _ctx: &egui::Context) {
