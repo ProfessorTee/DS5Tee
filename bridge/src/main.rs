@@ -45,7 +45,8 @@ const GAME_DEADZONE: f64 = 0.15; // usual game stick deadzone; gyro-only motion 
 const SPEAKER_PREGAIN: u8 = 7; // speaker pre-amp gain 1-7 (DS5Dongle default 2); PS5 games sound louder than 2
 const MIC_OPUS_SIZE: usize = 71; // bytes of one 10 ms mono Opus mic frame from the pad
 const MIC_FRAME: usize = 480; // samples per mic frame
-const MIC_START: usize = 3 * MIC_FRAME; // buffered before playout starts: absorbs BT jitter
+const MIC_START: usize = 4 * MIC_FRAME; // buffered before playout starts: absorbs BT jitter
+const MIC_LOW: usize = MIC_FRAME; // below this the playout stretches 1 % instead of running dry (pad clock slower than ours)
 const MIC_MAX: usize = 8 * MIC_FRAME; // older samples are dropped: bounds latency if the pad's clock runs fast
 const MIC_PACKET: usize = 48 * 4; // 1 ms of 48 kHz 2 ch s16, the wMaxPacketSize of 196 would run the stream at 49 kHz
 const EPIPE: i32 = -32;
@@ -454,6 +455,33 @@ struct Mic {
     playing: bool,
     frames: u32,
     underruns: u32,
+    toc: Option<u8>,
+    held: Option<i16>,
+    stretch: u32,
+    repeats: u32,
+}
+
+/// What an Opus packet's first byte says: codec mode, audio bandwidth, frame length.
+fn opus_toc(toc: u8) -> String {
+    let config = toc >> 3;
+    let (mode, band) = match config {
+        0..=3 => ("SILK", "narrowband 4 kHz"),
+        4..=7 => ("SILK", "mediumband 6 kHz"),
+        8..=11 => ("SILK", "wideband 8 kHz"),
+        12..=13 => ("Hybrid", "super-wideband 12 kHz"),
+        14..=15 => ("Hybrid", "fullband 20 kHz"),
+        16..=19 => ("CELT", "narrowband 4 kHz"),
+        20..=23 => ("CELT", "wideband 8 kHz"),
+        24..=27 => ("CELT", "super-wideband 12 kHz"),
+        _ => ("CELT", "fullband 20 kHz"),
+    };
+    let ms = match config {
+        0..=11 => [10.0, 20.0, 40.0, 60.0][(config % 4) as usize],
+        12..=15 => [10.0, 20.0][(config % 2) as usize],
+        _ => [2.5, 5.0, 10.0, 20.0][(config % 4) as usize],
+    };
+    format!("{mode}, {band} audio bandwidth, {ms} ms frames, {} (toc {toc:#04x})",
+            if toc & 4 != 0 { "stereo" } else { "mono" })
 }
 
 impl Mic {
@@ -463,10 +491,16 @@ impl Mic {
         if dec.is_null() {
             return Err(io::Error::other(format!("opus_decoder_create {err}")));
         }
-        Ok(Mic { dec, pcm: VecDeque::new(), playing: false, frames: 0, underruns: 0 })
+        Ok(Mic { dec, pcm: VecDeque::new(), playing: false, frames: 0, underruns: 0, toc: None, held: None, stretch: 0, repeats: 0 })
     }
 
     fn push(&mut self, packet: &[u8]) {
+        if let Some(&toc) = packet.first() {
+            if self.toc != Some(toc) {
+                println!("mic: {}", opus_toc(toc));
+                self.toc = Some(toc);
+            }
+        }
         let mut out = [0i16; MIC_FRAME];
         let n = unsafe {
             opus_decode(self.dec, packet.as_ptr(), packet.len() as i32, out.as_mut_ptr(), MIC_FRAME as i32, 0)
@@ -485,7 +519,21 @@ impl Mic {
     fn fill(&mut self, out: &mut Vec<u8>, len: usize) {
         self.playing |= self.pcm.len() >= MIC_START;
         for _ in 0..len / 4 {
-            let sample = if self.playing { self.pcm.pop_front() } else { Some(0) };
+            // Running low: repeat one sample in a hundred, so a pad clock a little slower than ours
+            // stretches the stream instead of draining it into an audible gap.
+            self.stretch += 1;
+            let repeat = self.playing && self.pcm.len() < MIC_LOW && self.stretch % 100 == 0;
+            let sample = if !self.playing {
+                Some(0)
+            } else if repeat {
+                self.repeats += 1;
+                self.held.or(Some(0))
+            } else {
+                self.pcm.pop_front()
+            };
+            if sample.is_some() && self.playing {
+                self.held = sample;
+            }
             if sample.is_none() {
                 self.playing = false;
                 self.underruns += 1;
@@ -1007,7 +1055,7 @@ impl Bridge {
             return Ok(());
         }
         if let Some(m) = self.mic.take() {
-            println!("mic closed: {} frames, {} underruns", m.frames, m.underruns);
+            println!("mic closed: {} frames, {} underruns, {} samples stretched", m.frames, m.underruns, m.repeats);
         }
         if on {
             self.mic = Some(Mic::new()?);
