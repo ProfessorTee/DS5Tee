@@ -1,6 +1,6 @@
 # Maintainer: ProfessorTee <tee.winkler@live.de>
 pkgname=ds5tee
-pkgver=2.0
+pkgver=2.0.0
 pkgrel=1
 pkgdesc="DualSense over Bluetooth like wired: adaptive triggers, haptics and speaker via a virtual USB pad"
 arch=('x86_64' 'aarch64')
@@ -30,5 +30,5 @@ package() {
     sed 's|/usr/local/bin/|/usr/bin/|' DS5Tee.desktop > DS5Tee.desktop.pkg
     install -Dm644 DS5Tee.desktop.pkg "$pkgdir/usr/share/applications/DS5Tee.desktop"
     install -Dm644 DS5Tee.desktop.pkg "$pkgdir/etc/xdg/autostart/DS5Tee.desktop"
-    install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname/"
+    install -Dm644 LICENSE THIRD_PARTY_NOTICES.md -t "$pkgdir/usr/share/licenses/$pkgname/"
 }

@@ -1,0 +1,18 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  build:
+    # Oldest supported runner: the binaries then need only glibc >= 2.35
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libopus-dev
+      - run: rustup update stable && rustup default stable
+      - run: cargo build --release --locked
+      - run: gh release create "$GITHUB_REF_NAME" target/release/ds5bridge target/release/DS5Tee ds5bridge.service DS5Tee.desktop --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
