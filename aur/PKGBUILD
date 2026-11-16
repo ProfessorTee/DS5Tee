@@ -1,6 +1,6 @@
 # Maintainer: ProfessorTee <tee.winkler@live.de>
 pkgname=ds5tee
-pkgver=2.0.0
+pkgver=2.0.1
 pkgrel=1
 pkgdesc="DualSense over Bluetooth like wired: adaptive triggers, haptics and speaker via a virtual USB pad"
 arch=('x86_64' 'aarch64')

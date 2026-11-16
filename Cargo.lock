@@ -539,7 +539,7 @@ dependencies = [
 
 [[package]]
 name = "ds5bridge"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "libc",
  "serde_json",
@@ -547,7 +547,7 @@ dependencies = [
 
 [[package]]
 name = "ds5tee"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "egui",
  "egui_software_backend",

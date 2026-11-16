@@ -355,6 +355,7 @@ fn run_tray() {
     let handle = Tray { pads: pads_now.clone(), cfg: cfg.clone(), settings_open, wake }.spawn().expect("tray");
     let mut touchpads = Touchpads::default();
     let (mut seen, mut last_status) = (mtime(&CONFIG), Instant::now());
+    let mut last_route: Option<Instant> = None; // pw-dump is the costly part of the loop: every 15 s is enough
     touchpads.apply(cfg["touchpad_mouse"].as_bool().unwrap_or(false));
     loop {
         let _ = rx.recv_timeout(Duration::from_secs(1)); // a stat per second catches the window's changes
@@ -370,7 +371,10 @@ fn run_tray() {
         if full {
             last_status = Instant::now();
             new_pads = pads();
-            if !new_pads.is_empty() {
+            if new_pads.is_empty() {
+                last_route = None;
+            } else if new_pads != pads_now || last_route.is_none_or(|t| t.elapsed() >= Duration::from_secs(15)) {
+                last_route = Some(Instant::now());
                 keep_haptics_on_pad();
             }
         }

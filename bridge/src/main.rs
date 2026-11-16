@@ -1054,7 +1054,7 @@ impl Bridge {
         if on == self.mic.is_some() {
             return Ok(());
         }
-        if let Some(m) = self.mic.take() {
+        if let Some(m) = self.mic.take().filter(|m| m.frames > 0) { // apps probing the mic open and close it at once
             println!("mic closed: {} frames, {} underruns, {} samples stretched", m.frames, m.underruns, m.repeats);
         }
         if on {
